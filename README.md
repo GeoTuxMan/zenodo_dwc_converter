@@ -133,6 +133,17 @@ the event as event-level eMoF records.
 * `basisOfRecord` = `HumanObservation` (`MaterialSample` when the dataset mentions eDNA /
   metabarcoding).
 
+### Dataset-level terms
+Filled in the core table from the Zenodo record (values already present in the data are kept),
+because EMODnetBiocheck treats `datasetName` and `institutionCode` as required:
+
+| Term | Source |
+|---|---|
+| `datasetName` | Zenodo title |
+| `datasetID` | DOI (`https://doi.org/…`) |
+| `institutionCode` | affiliation of the first creator that has one - **to be checked by the data manager**; left empty when Zenodo gives no affiliation |
+| `license` | Creative Commons licence URL |
+
 ### Robustness rules
 * columns mapped to text terms (taxonomy, locality, basisOfRecord…) are dropped when they hold numbers;
 * `basisOfRecord` values outside the DwC vocabulary are replaced by the default;
@@ -242,17 +253,18 @@ exist, column counts must match `meta.xml` and core ids must be unique.
 
 Full run over all 321 open *Included* records of the Task 1 inventory (Black Sea first, then
 datasets whose title/notes mention occurrence, abundance, survey or monitoring); the 22 records
-whose tables were all above 30 MB (106 GB in total) were then processed with `--large-files`.
+whose tables were all above 30 MB (106 GB in total) were then processed with `--large-files`,
+and all 167 archives were rebuilt with `--large-files` and the dataset-level terms.
 
 | Status | Datasets |
 |---|---|
-| Converted | 22 |
-| Partial | 145 |
+| Converted | 23 |
+| Partial | 144 |
 | Failed | 154 |
 | Not attempted | 0 |
 
 167 archives written (106 Event core, 61 Occurrence core; 117 long, 50 wide layouts) —
-557,713 events, 4,606,540 occurrences, 2,145,894 eMoF records; mean WoRMS match 76 %. All
+633,368 events, 5,253,700 occurrences, 2,153,369 eMoF records; mean WoRMS match 76 %. All
 archives pass the structural check. Most *Partial* datasets lack coordinates and/or dates in
 the files themselves (typical of experiment / supplementary-material uploads). Of the *Failed*
 ones, 120 hold no taxon-level data (traits, genetics, effort tables, model output, acoustic or
@@ -261,6 +273,9 @@ satellite products) and 34 have no readable table (images, audio, rasters, scrip
 Large-file pass: 22 records, 106 GB on Zenodo, about 0.4 GB actually transferred - 1 Converted
 (benthic amphipods SDM, 15396200: 136,405 occurrences), 2 Partial (round goby impact 5779207,
 seal predation 5004746), 19 Failed (image libraries, acoustic recordings, satellite rasters).
+In the rebuild, three datasets that had skipped some large files gained data: MEDUSA jellyfish
+records (20713997), SAMBAH harbour porpoise detections (6639075, now Converted) and BENTH-MARC
+zoobenthos (20782806).
 
 The archives were then checked by Task 2 stage 2 (`zenodo_qc.py --dwca … --run-biocheck`).
 

@@ -203,3 +203,15 @@ def test_taxon_by_sample_matrix_is_not_reference_list():
     for k in range(6):
         df[f'S{k}'] = range(600)
     assert not dc.is_reference_list('ASV_taxonomy.csv', df, dc.map_columns(list(df.columns)))
+
+
+def test_dataset_terms_from_zenodo_metadata():
+    meta = {'metadata': {'title': 'Black Sea  benthos', 'doi': '10.5281/zenodo.1',
+                         'creators': [{'name': 'A', 'affiliation': None}, {'name': 'B', 'affiliation': 'NIMRD'}],
+                         'license': {'id': 'cc-by-nc-4.0'}}}
+    t = dc.dataset_terms(meta, '1')
+    assert t == {'datasetName': 'Black Sea benthos', 'datasetID': 'https://doi.org/10.5281/zenodo.1',
+                 'institutionCode': 'NIMRD',
+                 'license': 'http://creativecommons.org/licenses/by-nc/4.0/legalcode'}
+    df = dc.add_dataset_terms(pd.DataFrame({'id': ['e1', 'e2'], 'institutionCode': ['VLIZ', '']}), meta, '1')
+    assert list(df['institutionCode']) == ['VLIZ', 'NIMRD']

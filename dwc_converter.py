@@ -1178,6 +1178,38 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
 # ---------------------------------------------------------------------------
 # DwC-A writing
 # ---------------------------------------------------------------------------
+def dataset_terms(meta, record_id):
+    """Dataset-level terms required by EMODnet Biology (BioCheck): datasetName, datasetID,
+    institutionCode (affiliation of the first creator that has one, as given on Zenodo) and
+    license. Values that Zenodo does not provide are left empty for the data manager."""
+    md = meta.get('metadata', {}) if isinstance(meta, dict) else {}
+    doi = md.get('doi') or meta.get('doi') or ''
+    inst = next((str(c['affiliation']).strip() for c in md.get('creators', []) or []
+                 if c.get('affiliation')), '')
+    lic_id = ((md.get('license') or {}).get('id') or '').lower()
+    lic_url = LICENSE_URLS.get(lic_id, ('', ''))[1]
+    m = re.fullmatch(r'cc-(by(?:-nc)?(?:-nd|-sa)?)-(\d\.\d)', lic_id)
+    if not lic_url and m:
+        lic_url = f'http://creativecommons.org/licenses/{m.group(1)}/{m.group(2)}/legalcode'
+    return {'datasetName': re.sub(r'\s+', ' ', md.get('title', '') or '').strip(),
+            'datasetID': f'https://doi.org/{doi}' if doi else f'https://zenodo.org/records/{record_id}',
+            'institutionCode': inst[:250],
+            'license': lic_url or lic_id}
+
+
+def add_dataset_terms(df, meta, record_id):
+    """Fill dataset-level terms in the core table (existing values are kept)."""
+    df = df.copy()
+    for term, value in dataset_terms(meta, record_id).items():
+        if not value:
+            continue
+        if term in df.columns:
+            df[term] = df[term].where(df[term].astype(str).str.strip() != '', value)
+        else:
+            df[term] = value
+    return df
+
+
 def tidy_frame(rows, terms, id_term):
     df = pd.DataFrame(rows)
     cols = [t for t in terms if t in df.columns and (df[t].astype(str).str.strip() != '').any()]
@@ -1689,6 +1721,8 @@ def fetch_large(session, f, rec_dir, extract_root, token=''):
     if ext in ('.csv', '.tsv', '.txt', '.tab'):
         dest = os.path.join(rec_dir, '_head', safe)
         download_head(session, f['url'], dest, LARGE_TEXT_HEAD_MB * 1024 * 1024, token)
+        if size <= LARGE_TEXT_HEAD_MB * 1024 * 1024:
+            return dest, f'{key}: {size / 1e6:.0f} MB text table downloaded whole'
         return dest, f'{key}: {size / 1e6:.0f} MB, only the first {LARGE_TEXT_HEAD_MB} MB read'
     if ext == '.zip':
         d = os.path.join(extract_root, re.sub(r'[^\w.-]', '_', key))
@@ -1829,6 +1863,9 @@ def convert_dwca_source(folder, record_id, meta, res, worms, out_dir):
     bbox, temporal = bbox_temporal(loc)
     zip_path = os.path.join(out_dir, 'dwca', f'{record_id}_dwca.zip')
     for c in list(core_out.columns) + [c for _f, _r, d in exts for c in d.columns]:
+        uris.setdefault(c, term_uri(c))
+    core_out = add_dataset_terms(core_out, meta, record_id)
+    for c in core_out.columns:
         uris.setdefault(c, term_uri(c))
     write_dwca(zip_path, (fname, rowtype, core_out), exts, eml_xml(meta, record_id, temporal, bbox), uris)
     res['dwca_file'] = f'dwca/{record_id}_dwca.zip'
@@ -2132,6 +2169,7 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
     bbox, temporal = bbox_temporal(loc_df)
     zip_path = os.path.join(out_dir, 'dwca', f'{record_id}_dwca.zip')
     os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+    core = (core[0], core[1], add_dataset_terms(core[2], meta, record_id))
     write_dwca(zip_path, core, exts, eml_xml(meta, record_id, temporal, bbox))
     problems = verify_dwca(zip_path)
     if problems:
