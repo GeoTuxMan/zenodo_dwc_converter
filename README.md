@@ -214,21 +214,25 @@ exist, column counts must match `meta.xml` and core ids must be unique.
 
 ## 9. Latest run (12 October 2026)
 
-First batch: 151 open *Included* records with tabular files (Black Sea first, then datasets whose
-title/notes mention occurrence, abundance, survey or monitoring).
+Full run over all 321 open *Included* records of the Task 1 inventory (Black Sea first, then
+datasets whose title/notes mention occurrence, abundance, survey or monitoring).
 
 | Status | Datasets |
 |---|---|
-| Converted | 12 |
-| Partial | 73 |
-| Failed | 64 |
-| Not attempted | 2 |
+| Converted | 21 |
+| Partial | 144 |
+| Failed | 134 |
+| Not attempted | 22 |
 
-85 archives written (57 Event core, 28 Occurrence core; 54 long, 31 wide layouts) —
-202,753 events, 1,860,519 occurrences, 1,755,482 eMoF records; mean WoRMS match 77 %. All 85
+165 archives written (103 Event core, 62 Occurrence core; 116 long, 49 wide layouts) —
+532,576 events, 4,363,912 occurrences, 2,069,062 eMoF records; mean WoRMS match 76 %. All 165
 archives pass the structural check. Most *Partial* datasets lack coordinates and/or dates in
-the files themselves (typical of experiment / supplementary-material uploads); most *Failed*
-ones hold no taxon-level data (traits, genetics, effort tables, model output).
+the files themselves (typical of experiment / supplementary-material uploads). Of the *Failed*
+ones, 98 hold no taxon-level data (traits, genetics, effort tables, model output), 13 have no
+readable table and 16 had their large files skipped (> 30 MB). *Not attempted* = all tabular
+files larger than the 30 MB download limit (raise it with a mapping override if needed).
+
+The archives were then checked by Task 2 stage 2 (`zenodo_qc.py --dwca … --run-biocheck`).
 
 Converted examples: Romanian Black Sea Meiobenthos BRIDGE-BS 2022–2024 (15119508), Meiobenthos
 GeoEcoMar DOORS 2023 (10863810), Seine nursery biodiversity 1995–2019 (3824354), gelatinous
