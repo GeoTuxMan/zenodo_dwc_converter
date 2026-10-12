@@ -11,3 +11,6 @@ venv/
 .DS_Store
 Thumbs.db
 run_log.txt
+output_pass1/
+first_pass_ids.txt
+run_log*.txt

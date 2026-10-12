@@ -88,12 +88,12 @@ def term_uri(term):
 # "latitude_dd" all become "latitude" / "latitude dd".
 SYNONYMS = {
     'eventID': ['eventid', 'event id', 'event', 'sample id', 'sampleid', 'sample code', 'sample',
-                'sample no', 'sample number', 'sample name', 'sample label', 'haul id', 'haul',
+                'sample no', 'sample number', 'sample name', 'sample label', 'haul id', 'haul no', 'haul number',
                 'samplingevent', 'sampling event', 'event code', 'id sample', 'cod proba',
                 'proba', 'probe', 'muestra'],
     'parentEventID': ['parenteventid', 'parent event id', 'parent event'],
     'eventDate': ['eventdate', 'event date', 'date', 'sampling date', 'sample date',
-                  'collection date', 'date collected', 'date sampled', 'datetime', 'date time',
+                  'collection date', 'date collected', 'datecollected', 'date sampled', 'datetime', 'date time',
                   'observation date', 'survey date', 'date of sampling', 'date of collection',
                   'sampledate', 'collectiondate', 'data', 'data recoltarii', 'datum', 'fecha',
                   'timestamp', 'date utc', 'start date', 'date start', 'dato'],
@@ -105,21 +105,24 @@ SYNONYMS = {
     'day': ['day', 'day collected', 'start day collected', 'dd', 'zi', 'ziua', 'dia', 'tag', 'jour', 'giorno', 'day of month'],
     'decimalLatitude': ['decimallatitude', 'decimal latitude', 'latitude', 'lat', 'lat dd',
                         'lat dec', 'latitude dd', 'latitude decimal', 'latitude n', 'lat n',
-                        'latitudine', 'breite', 'latitud', 'start latitude', 'latitude start',
-                        'lat start', 'start lat', 'y coord', 'y coordinate', 'lat wgs84',
+                        'latitudine', 'breite', 'latitud', 'y coord', 'y coordinate', 'lat wgs84',
                         'latitude wgs84', 'latdd', 'lat deg', 'latitude deg', 'y'],
     'decimalLongitude': ['decimallongitude', 'decimal longitude', 'longitude', 'lon', 'long',
                          'lng', 'lon dd', 'long dd', 'lon dec', 'longitude dd',
                          'longitude decimal', 'longitude e', 'lon e', 'long e', 'longitudine',
-                         'laenge', 'lange', 'longitud', 'start longitude', 'longitude start',
-                         'lon start', 'start lon', 'x coord', 'x coordinate', 'lon wgs84',
+                         'laenge', 'lange', 'longitud', 'x coord', 'x coordinate', 'lon wgs84',
                          'longitude wgs84', 'londd', 'lon deg', 'longitude deg', 'x'],
+    # start-of-transect / haul positions: used when decimalLatitude/Longitude are empty
+    '_latStart': ['start latitude', 'latitude start', 'lat start', 'start lat', 'lat1',
+                  'latitude 1', 'shoot latitude'],
+    '_lonStart': ['start longitude', 'longitude start', 'lon start', 'start lon', 'long start',
+                  'lon1', 'longitude 1', 'shoot longitude'],
     'minimumDepthInMeters': ['minimumdepthinmeters', 'minimum depth', 'min depth', 'depth min',
                              'mindepth', 'depth from', 'upper depth', 'depth top', 'top depth',
-                             'depth upper', 'start depth', 'depth start'],
+                             'depth upper', 'start depth', 'depth start', 'starting depth'],
     'maximumDepthInMeters': ['maximumdepthinmeters', 'maximum depth', 'max depth', 'depth max',
                              'maxdepth', 'depth to', 'lower depth', 'depth bottom',
-                             'depth lower', 'end depth', 'depth end'],
+                             'depth lower', 'end depth', 'depth end', 'ending depth'],
     # A single depth column fills both minimum and maximum depth (handled in build).
     '_depth': ['depth', 'sampling depth', 'sample depth', 'depth m', 'water depth sampled',
                'adancime', 'adincime', 'profundidad', 'profondeur', 'tiefe', 'profondita',
@@ -148,7 +151,7 @@ SYNONYMS = {
     'scientificName': ['scientificname', 'scientific name', 'scientific name accepted',
                        'scientific name valid', 'valid scientific name', 'accepted scientific name',
                        'species', 'species name',
-                       'speciesname', 'taxon', 'taxa', 'taxon name', 'taxonname', 'taxa name',
+                       'speciesname', 'taxon', 'taxa', 'taxon name', 'taxonname', 'taxa name', 'taxaname',
                        'specie', 'specia', 'specii', 'organism', 'organism name', 'valid name',
                        'validname', 'accepted name', 'acceptedname', 'latin name', 'latinname',
                        'genus species', 'aphia name', 'taxonomic name', 'scientific',
@@ -230,13 +233,32 @@ UNIT_IDS = {
 }
 MEASUREMENT_KEYWORDS = [
     # (regex on normalised header, kind)
-    (r'\bbiomass\b|\bwet weight\b|\bdry weight\b|\bbiomasa\b|\bww\b|\bdw\b|\bafdw\b', 'biomass'),
+    (r'\bbiomass\b|\bweight\b|\bbiomasa\b|\bgreutate\b|\bww\b|\bdw\b|\bafdw\b', 'biomass'),
     (r'\babundance\b|\bdensity\b|\bdensitate\b|\babundenta\b|\bdensidad\b|\bcells? per\b'
      r'|\bind(ividuals)? per\b|\bconcentration\b|\bcpue\b', 'abundance'),
     (r'\bcover\b|\bcoverage\b|\bacoperire\b', 'cover'),
     (r'\bfrequency\b|\bfrecventa\b', 'frequency'),
-    (r'\blength\b|\bsize\b|\blungime\b|\bweight\b|\bgreutate\b', 'size'),
+    (r'\blength\b|\bsize\b|\blungime\b', 'size'),
 ]
+
+BASIS_OF_RECORD = ['HumanObservation', 'MachineObservation', 'MaterialSample', 'PreservedSpecimen',
+                   'LivingSpecimen', 'FossilSpecimen', 'MaterialCitation', 'Occurrence']
+# Columns that must hold text; a numeric column mapped to them is a false match.
+TEXT_TERMS = {'scientificName', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus',
+              'locality', 'country', 'recordedBy', 'identifiedBy', 'basisOfRecord', 'waterBody'}
+
+
+def norm_basis(v):
+    """Return a valid DwC basisOfRecord value or '' (then the default is used)."""
+    key = re.sub(r'[^a-z]', '', str(v or '').lower())
+    for b in BASIS_OF_RECORD:
+        if key == b.lower():
+            return b
+    aliases = {'o': 'HumanObservation', 'observation': 'HumanObservation',
+               'humanobs': 'HumanObservation', 's': 'PreservedSpecimen',
+               'specimen': 'PreservedSpecimen', 'sample': 'MaterialSample',
+               'literature': 'MaterialCitation', 'machine': 'MachineObservation'}
+    return aliases.get(key, '')
 ABIOTIC_KEYWORDS = [
     (r'\btemperature\b|\btemp\b|\btemperatura\b|\bsst\b', 'Temperature of the water body', 'degrees Celsius'),
     (r'\bsalinity\b|\bsalinitate\b|\bsal\b|\bpsu\b', 'Salinity of the water body', 'Dimensionless'),
@@ -321,7 +343,9 @@ def map_columns(columns, override=None):
             continue
         n = normalise_header(col)
         if re.search(r'\b(modified|identified|created|updated|entered|entry|end|stop|qc|flag|'
-                     r'error|accuracy|precision|method|source|unit|units)\b', n):
+                     r'error|accuracy|precision|method|source|unit|units|duration|distance|speed|time)\b', n):
+            continue
+        if measurement_kind(col):
             continue
         words = n.split()
         for k in range(len(words) - 1, 0, -1):
@@ -329,6 +353,23 @@ def map_columns(columns, override=None):
             t = idx.get(prefix)
             if t and len(prefix) >= 3:
                 cands.append((100 + _syn_rank(t, prefix), pos, col, t))
+                break
+    assign(cands)
+    # Pass 3: trailing words for the key terms ("Meiobenthos - taxaname", "Sampling station
+    # code" ...)
+    cands = []
+    for pos, col in enumerate(free):
+        if col in mapping:
+            continue
+        if measurement_kind(col):
+            continue
+        words = normalise_header(col).split()
+        for k in range(1, len(words)):
+            suffix = ' '.join(words[k:])
+            t = idx.get(suffix)
+            if t in ('scientificName', 'eventDate', 'eventID', 'locationID', 'decimalLatitude',
+                     'decimalLongitude', 'individualCount') and len(suffix) >= 4:
+                cands.append((200 + _syn_rank(t, suffix), pos, col, t))
                 break
     assign(cands)
     return mapping
@@ -385,8 +426,9 @@ def describe_measurement(kind, unit_text, context=''):
                     P01 + 'SDBIOL01/', 'Number per millilitre', '')
         return ('Abundance', '', unit_text or '', '')
     if kind == 'biomass':
-        mtype = 'Wet weight biomass' if re.search(r'wet|ww|fresh', ctx + u) else (
-            'Dry weight biomass' if re.search(r'dry|dw|afdw', ctx + u) else 'Biomass')
+        words = normalise_header(ctx) + ' ' + u
+        mtype = 'Wet weight biomass' if re.search(r'\b(wet|ww|fresh)\b', words) else (
+            'Dry weight biomass' if re.search(r'\b(dry|dw|afdw)\b', words) else 'Biomass')
         if re.search(r'mg/m3|mgm-3|mg\*m-3', u):
             return (mtype + ' per unit volume of the water body', '', 'Milligrams per cubic metre',
                     UNIT_IDS['milligrams per cubic metre'])
@@ -566,8 +608,35 @@ def clean_taxon(name):
     if re.search(r'\s(sp|spp|sp\.\s*\d*|spp\.|indet|n\.?\s*sp)\.?\s*\d*$', s, re.I):
         s = re.sub(r'\s(sp|spp|indet|n\.?\s*sp)\.?\s*\d*.*$', '', s, flags=re.I).strip()
         rank = 'genus'
+    s = strip_authorship(s)
     s = re.sub(r'\s*\(.*?\)\s*$', '', s).strip() or s
     return s, qualifier, rank
+
+
+def strip_authorship(s):
+    """'Actinoptychus senarius (Ehr.) Ehr.' -> 'Actinoptychus senarius';
+    'Aulacoseira granulata var. angustissima (O. Müller) Simonsen' keeps the variety."""
+    toks = s.split(' ')
+    if len(toks) < 3 or not re.match(r'^[A-Z][a-z]+$', toks[0]):
+        return s
+    out = [toks[0]]
+    i = 1
+    if i < len(toks) and re.match(r'^\([A-Z][a-z]+\)$', toks[i]):        # subgenus
+        out.append(toks[i])
+        i += 1
+    expect_epithet = True
+    while i < len(toks):
+        t = toks[i]
+        if expect_epithet and re.match(r'^[a-z][a-z-]+$', t):
+            out.append(t)
+            expect_epithet = False
+        elif t in ('var.', 'subsp.', 'ssp.', 'f.', 'forma', 'var', 'subsp'):
+            out.append(t)
+            expect_epithet = True
+        else:
+            break
+        i += 1
+    return ' '.join(out)
 
 
 def stable_id(*parts, n=12):
@@ -817,6 +886,10 @@ def looks_numeric(series, min_frac=0.7):
     return sum(to_number(v) is not None for v in vals.head(500)) / min(len(vals), 500) >= min_frac
 
 
+# Optional callable(names) -> set of names recognised as taxa (set to WoRMS during a run).
+TAXON_VALIDATOR = None
+
+
 def detect_layout(df, mapping):
     """Return ('long'|'wide_species_cols'|'wide_sample_cols'|None, value columns)."""
     unmapped = [c for c in df.columns if c not in mapping]
@@ -825,6 +898,12 @@ def detect_layout(df, mapping):
         latin = [c for c in unmapped if LATIN_COL_RE.match(str(c).strip())
                  and not measurement_kind(c) and not abiotic_kind(c)]
         latin_num = [c for c in latin if looks_numeric(df[c], 0.5)]
+        if TAXON_VALIDATOR and latin_num:
+            # headers like "Foraging", "Sand", "Cod" look Latin; keep only names known to WoRMS
+            names = {c: clean_taxon(c)[0] for c in latin_num}
+            valid = TAXON_VALIDATOR([n for n in names.values() if n])
+            ok = [c for c in latin_num if names[c] in valid]
+            latin_num = ok if len(ok) >= 0.6 * len(latin_num) else []
         if len(latin_num) >= 3:
             return 'wide_species_cols', latin_num
         return None, []
@@ -852,9 +931,12 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
     default_taxon: for single-species datasets (taxon only in the dataset title), tables with
     sampling information but no taxon column get this constant scientificName.
     """
+    mapping = {c: t for c, t in mapping.items()
+               if not (t in TEXT_TERMS and c in df.columns and looks_numeric(df[c], 0.8))}
     layout, value_cols = detect_layout(df, mapping)
     used_default = False
-    if layout is None and default_taxon and             set(mapping.values()) & {'eventDate', 'year', 'decimalLatitude'}:
+    if layout is None and default_taxon and \
+            set(mapping.values()) & {'eventDate', 'year', 'decimalLatitude'}:
         df = df.copy()
         df['__taxon'] = default_taxon
         mapping = dict(mapping)
@@ -899,6 +981,7 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
 
     date_s, year_s, month_s, day_s = get('eventDate'), get('year'), get('month'), get('day')
     lat_s, lon_s = get('decimalLatitude'), get('decimalLongitude')
+    lat0_s, lon0_s = get('_latStart'), get('_lonStart')
     dmin_s, dmax_s, depth_s = get('minimumDepthInMeters'), get('maximumDepthInMeters'), get('_depth')
     ev_s = get('eventID')
     count_s = get('individualCount')
@@ -989,6 +1072,9 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
         lon = parse_coordinate(sval(lon_s, i), False) if lon_s is not None else None
         if (lat_s is not None and sval(lat_s, i) and lat is None) or (lon_s is not None and sval(lon_s, i) and lon is None):
             stats['bad_coords'] += 1
+        if (lat is None or lon is None) and lat0_s is not None and lon0_s is not None:
+            lat = parse_coordinate(sval(lat0_s, i), True)
+            lon = parse_coordinate(sval(lon0_s, i), False)
         if lat is None or lon is None:
             lat = lon = None
         dmin = dmax = None
@@ -1001,6 +1087,8 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
                 dmax = dmin
         elif depth_s is not None:
             dmin, dmax = parse_depth(sval(depth_s, i))
+        if dmin is not None and dmax is not None and dmin > dmax:   # e.g. start/end of a tow
+            dmin, dmax = dmax, dmin
 
         ev = {t: sval(ev_series[t], i) for t in simple_event if ev_series[t] is not None}
         ev.update({'eventDate': date or '', 'decimalLatitude': '' if lat is None else lat,
@@ -1041,7 +1129,7 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
         occ.update({'eventID': event_id, 'scientificName': name,
                     'verbatimIdentification': raw_name if raw_name != name else '',
                     'occurrenceStatus': status,
-                    'basisOfRecord': occ.get('basisOfRecord') or basis})
+                    'basisOfRecord': norm_basis(occ.get('basisOfRecord')) or basis})
         if qual and not occ.get('identificationQualifier'):
             occ['identificationQualifier'] = qual
         if rank_hint and not occ.get('taxonRank'):
@@ -1104,6 +1192,8 @@ def clean_cell(v):
         return ''
     if isinstance(v, float) and v.is_integer() and abs(v) < 1e15:
         return str(int(v))
+    if isinstance(v, str) and re.fullmatch(r'-?\d{1,15}\.0', v):
+        return v[:-2]
     return re.sub(r'[\t\r\n]+', ' ', str(v))
 
 
@@ -1674,6 +1764,8 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
                 if la is not None and lo is not None:
                     station_coords[str(r[key_col]).strip()] = (la, lo)
 
+    global TAXON_VALIDATOR
+    TAXON_VALIDATOR = lambda names: {n for n, m in worms.match(names).items() if m}
     default_taxon = title_taxon(meta, worms)
     events, occs, emofs, layouts = {}, [], [], set()
     for name, df in tables:
@@ -1687,7 +1779,8 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
         layouts.add(built['layout'])
         for c, t in built['mapping'].items():
             if not c.startswith('__'):
-                t = t if t != '_depth' else 'minimum/maximumDepthInMeters'
+                t = {'_depth': 'minimum/maximumDepthInMeters', '_latStart': 'decimalLatitude (start)',
+                     '_lonStart': 'decimalLongitude (start)'}.get(t, t)
                 key = c if res['mapped_fields'].get(c, t) == t else f'{name}:{c}'
                 res['mapped_fields'][key] = t
         used = set(built['mapping'])
@@ -1737,9 +1830,21 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
                          ('eventDate', 'decimalLatitude', 'locationID', 'locality'))
     ev_df['geodeticDatum'] = ['EPSG:4326' if str(la).strip() != '' else ''
                               for la in ev_df.get('decimalLatitude', pd.Series([''] * len(ev_df)))]
-    occ_df = pd.DataFrame(occs)
+    occ_df = pd.DataFrame(occs).fillna('')
+    emof_df = pd.DataFrame(emofs).fillna('') if emofs else None
+    # Tables repeated in several files / sheets produce identical rows: keep one copy.
+    n0 = len(occ_df)
+    occ_df = occ_df.astype(str).drop_duplicates().reset_index(drop=True)
+    if emof_df is not None:
+        emof_df = emof_df.astype(str).drop_duplicates().reset_index(drop=True)
+    if len(occ_df) < n0:
+        res['issues'].append(f'{n0 - len(occ_df)} duplicate occurrence rows removed (repeated tables)')
+    dup = occ_df['occurrenceID'].duplicated(keep=False)
+    if dup.any():
+        k = occ_df.groupby('occurrenceID').cumcount()
+        occ_df.loc[dup & (k > 0), 'occurrenceID'] = occ_df['occurrenceID'] + '_dup' + k.astype(str)
+        res['issues'].append(f'{int((dup & (k > 0)).sum())} conflicting occurrenceIDs made unique')
     occ_df = apply_worms(occ_df, worms, res)
-    emof_df = pd.DataFrame(emofs) if emofs else None
 
     if has_event_info and len(ev_df) < len(occ_df):
         res['core'] = 'Event'

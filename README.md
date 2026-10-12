@@ -118,6 +118,15 @@ the event as event-level eMoF records.
 * `basisOfRecord` = `HumanObservation` (`MaterialSample` when the dataset mentions eDNA /
   metabarcoding).
 
+### Robustness rules
+* columns mapped to text terms (taxonomy, locality, basisOfRecord…) are dropped when they hold numbers;
+* `basisOfRecord` values outside the DwC vocabulary are replaced by the default;
+* start-of-haul positions (`StartLatitude`…) are used when the main coordinates are empty;
+* taxon authorship is stripped (`Actinoptychus senarius (Ehr.) Ehr.` → `Actinoptychus senarius`);
+* in species-as-columns matrices, headers are accepted as taxa only if WoRMS recognises them;
+* a single Latin name in the Zenodo title is used for single-species tables without a taxon column;
+* identical rows coming from repeated sheets/files are removed, conflicting occurrenceIDs made unique.
+
 ### Station tables
 If a dataset has a separate station table (station/locality + coordinates, no taxa), events
 without coordinates receive them through the station code.
@@ -203,7 +212,33 @@ python -m pytest -q tests
 Every archive is re-opened after writing: `meta.xml` must parse, all referenced files must
 exist, column counts must match `meta.xml` and core ids must be unique.
 
-## 9. Known limitations
+## 9. Latest run (12 October 2026)
+
+First batch: 151 open *Included* records with tabular files (Black Sea first, then datasets whose
+title/notes mention occurrence, abundance, survey or monitoring).
+
+| Status | Datasets |
+|---|---|
+| Converted | 12 |
+| Partial | 73 |
+| Failed | 64 |
+| Not attempted | 2 |
+
+85 archives written (57 Event core, 28 Occurrence core; 54 long, 31 wide layouts) —
+202,753 events, 1,860,519 occurrences, 1,755,482 eMoF records; mean WoRMS match 77 %. All 85
+archives pass the structural check. Most *Partial* datasets lack coordinates and/or dates in
+the files themselves (typical of experiment / supplementary-material uploads); most *Failed*
+ones hold no taxon-level data (traits, genetics, effort tables, model output).
+
+Converted examples: Romanian Black Sea Meiobenthos BRIDGE-BS 2022–2024 (15119508), Meiobenthos
+GeoEcoMar DOORS 2023 (10863810), Seine nursery biodiversity 1995–2019 (3824354), gelatinous
+macrozooplankton North Sea (13903034), Pacific Arctic benthos (12553904, wide matrix).
+
+Zenodo was intermittently unavailable (HTTP 504) during the run; the tool opens a circuit
+breaker after three server errors and retries the skipped datasets in extra passes
+(`--retry-passes`, `--retry-wait`).
+
+## 10. Known limitations
 
 * Heuristic mapping: unusual headers or multi-row headers may need an override.
 * Information held only in papers or README files (coordinates, dates, units) is not extracted.
@@ -213,6 +248,6 @@ exist, column counts must match `meta.xml` and core ids must be unique.
 
 Archives should be reviewed (e.g. with Task 2 QC / EMODnetBiocheck) before publication on the IPT.
 
-## 10. Credits
+## 11. Credits
 Developed at NIMRD "Grigore Antipa", Constanța, Romania, for EMODnet Biology. Each converted
 dataset keeps the licence and authorship of its Zenodo record.

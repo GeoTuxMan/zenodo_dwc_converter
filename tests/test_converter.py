@@ -64,6 +64,9 @@ def test_depth_and_taxa():
     assert dc.clean_taxon('Chaetoceros sp.') == ('Chaetoceros', None, 'genus')
     assert dc.clean_taxon('cf. Acartia clausi')[0:2] == ('Acartia clausi', 'cf.')
     assert dc.clean_taxon('Total')[0] is None
+    assert dc.clean_taxon('Actinoptychus senarius (Ehr.) Ehr.')[0] == 'Actinoptychus senarius'
+    assert dc.clean_taxon('Aulacoseira granulata var. angustissima (O. Muller) Simonsen')[0] == \
+        'Aulacoseira granulata var. angustissima'
     assert dc.clean_taxon('123')[0] is None
 
 
@@ -97,6 +100,23 @@ def test_wide_species_columns():
     assert len(built['occ']) == 6
     assert sum(o['occurrenceStatus'] == 'absent' for o in built['occ']) == 1
     assert {e['eventDate'] for e in built['events'].values()} == {'2015-06', '2015-07'}
+
+
+def test_wide_needs_known_taxa(monkeypatch):
+    df = pd.DataFrame({'Site': ['A', 'B'], 'Year': ['2010', '2011'], 'Foraging': ['1', '2'],
+                       'Grouping': ['0', '3'], 'Shelter': ['2', '2']})
+    m = dc.map_columns(list(df.columns))
+    assert dc.detect_layout(df, m)[0] == 'wide_species_cols'          # no validator: heuristic only
+    monkeypatch.setattr(dc, 'TAXON_VALIDATOR', lambda names: set())
+    assert dc.detect_layout(df, m)[0] is None                         # WoRMS knows none of them
+
+
+def test_measurement_from_unit_only():
+    m = dc.map_columns(['Meiobenthos - taxaname', 'datecollected', 'Observed Individual Count (ind/m2)'])
+    assert m['Meiobenthos - taxaname'] == 'scientificName' and m['datecollected'] == 'eventDate'
+    assert 'Observed Individual Count (ind/m2)' not in m
+    assert dc.measurement_kind('Observed Individual Count (ind/m2)') == 'abundance'
+    assert dc.measurement_kind('ObservedWeight (mg/m2)') == 'biomass'
 
 
 def test_wide_sample_columns():
