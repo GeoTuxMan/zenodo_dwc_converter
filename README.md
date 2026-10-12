@@ -47,7 +47,22 @@ When a dataset has no sampling-event information (no date, place or station), an
 | `.zip` | extracted safely (no path traversal, ≤ 200 MB uncompressed), tables read recursively |
 | existing **DwC-A** (zip with `meta.xml`) | validated and normalised: read through `meta.xml`, taxonomy enriched with WoRMS, re-packaged |
 
-Files larger than 30 MB are skipped (and reported); README/licence files are ignored.
+Files larger than 30 MB are skipped (and reported) unless `--large-files` is given;
+README/licence files are ignored.
+
+### Large files (`--large-files`)
+Large Zenodo deposits are usually zips of images, sound, rasters or model output that hold
+a few small tables. Instead of downloading them whole, the converter reads them **remotely
+through HTTP Range requests** (Zenodo answers `206 Partial Content`):
+
+| File > 30 MB | Handling |
+|---|---|
+| `.zip` | only the zip directory is fetched to list the members; only tabular members (`.csv`, `.txt`, `.xlsx`…, plus `meta.xml`/`eml.xml` of a DwC-A) are extracted, each ≤ 500 MB, text members cut to their first 50 MB; deep paths are flattened (Windows MAX_PATH) |
+| `.csv` `.tsv` `.txt` `.tab` | only the first 50 MB are downloaded, cut at the last complete line |
+| `.xlsx` `.xls` `.ods` | downloaded whole up to 150 MB |
+
+Example: a 21 GB zip of satellite rasters is inspected with ~1 MB of traffic. What was read
+is reported in `issues` (`… zip read remotely - 6 of 171 files are tables (3.1 MB transferred)`).
 
 ### Layouts
 
@@ -125,7 +140,11 @@ the event as event-level eMoF records.
 * taxon authorship is stripped (`Actinoptychus senarius (Ehr.) Ehr.` → `Actinoptychus senarius`);
 * in species-as-columns matrices, headers are accepted as taxa only if WoRMS recognises them;
 * a single Latin name in the Zenodo title is used for single-species tables without a taxon column;
-* identical rows coming from repeated sheets/files are removed, conflicting occurrenceIDs made unique.
+* identical rows coming from repeated sheets/files are removed, conflicting occurrenceIDs made unique;
+* taxon **reference lists** (code lists, checklists, taxonomies: one row per taxon, higher
+  classification columns, no coordinates/stations and fewer than 5 numeric columns) are not
+  turned into occurrences - e.g. the FAO ASFIS species code list shipped with model scripts.
+  Taxon × sample matrices (ASV tables, abundance matrices) are kept.
 
 ### Station tables
 If a dataset has a separate station table (station/locality + coordinates, no taxa), events
@@ -147,7 +166,7 @@ the issues.
 | **Converted** | archive written; core + all required terms filled for ≥ 90 % of rows (`eventDate`, `decimalLatitude`, `decimalLongitude`, `occurrenceID`, `scientificName`, `occurrenceStatus`, `basisOfRecord`) and `scientificNameID` for ≥ 80 % |
 | **Partial** | archive written but some required terms are missing — listed in `missing_required` (typically coordinates or dates kept in a paper / README) |
 | **Failed** | files unreadable, or no taxon column / species matrix found in any table |
-| **Not attempted** | embargoed / restricted, no tabular files, or all tabular files > 30 MB |
+| **Not attempted** | embargoed / restricted, no tabular files, or all tabular files > 30 MB without `--large-files` |
 
 A *Partial* archive is a working draft: add the missing information (or a mapping override)
 and re-run.
@@ -174,10 +193,17 @@ python dwc_converter.py --ids 15119508 4665967
 # only datasets that passed Task 2 QC (Pass / Warnings), best data score first
 python dwc_converter.py --qc-results ../zenodo_qc/output/qc_results.json
 
+# also read files > 30 MB remotely, and add the results to the existing report
+python dwc_converter.py --ids 15396200 5004746 --large-files --merge
+
 # all options
 python dwc_converter.py --inventory data.json --cache ./zenodo_cache --out ./output \
-                        --mapping-dir ./mappings --limit 100 --include-review
+                        --mapping-dir ./mappings --limit 100 --include-review \
+                        --large-files --merge --retry-passes 2 --retry-wait 600
 ```
+
+`--merge` updates `conversion_results.json` in `--out` instead of replacing it - use it when
+re-running a subset with `--ids`.
 
 ### Mapping overrides
 When the automatic mapping is wrong, put `<zenodo id>.json` (or `.yaml`) in the mapping folder.
@@ -215,22 +241,26 @@ exist, column counts must match `meta.xml` and core ids must be unique.
 ## 9. Latest run (12 October 2026)
 
 Full run over all 321 open *Included* records of the Task 1 inventory (Black Sea first, then
-datasets whose title/notes mention occurrence, abundance, survey or monitoring).
+datasets whose title/notes mention occurrence, abundance, survey or monitoring); the 22 records
+whose tables were all above 30 MB (106 GB in total) were then processed with `--large-files`.
 
 | Status | Datasets |
 |---|---|
-| Converted | 21 |
-| Partial | 144 |
-| Failed | 134 |
-| Not attempted | 22 |
+| Converted | 22 |
+| Partial | 145 |
+| Failed | 154 |
+| Not attempted | 0 |
 
-165 archives written (103 Event core, 62 Occurrence core; 116 long, 49 wide layouts) —
-532,576 events, 4,363,912 occurrences, 2,069,062 eMoF records; mean WoRMS match 76 %. All 165
+167 archives written (106 Event core, 61 Occurrence core; 117 long, 50 wide layouts) —
+557,713 events, 4,606,540 occurrences, 2,145,894 eMoF records; mean WoRMS match 76 %. All
 archives pass the structural check. Most *Partial* datasets lack coordinates and/or dates in
 the files themselves (typical of experiment / supplementary-material uploads). Of the *Failed*
-ones, 98 hold no taxon-level data (traits, genetics, effort tables, model output), 13 have no
-readable table and 16 had their large files skipped (> 30 MB). *Not attempted* = all tabular
-files larger than the 30 MB download limit (raise it with a mapping override if needed).
+ones, 120 hold no taxon-level data (traits, genetics, effort tables, model output, acoustic or
+satellite products) and 34 have no readable table (images, audio, rasters, scripts).
+
+Large-file pass: 22 records, 106 GB on Zenodo, about 0.4 GB actually transferred - 1 Converted
+(benthic amphipods SDM, 15396200: 136,405 occurrences), 2 Partial (round goby impact 5779207,
+seal predation 5004746), 19 Failed (image libraries, acoustic recordings, satellite rasters).
 
 The archives were then checked by Task 2 stage 2 (`zenodo_qc.py --dwca … --run-biocheck`).
 

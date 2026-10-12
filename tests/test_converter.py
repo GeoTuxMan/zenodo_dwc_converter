@@ -155,3 +155,51 @@ def test_archive_roundtrip(tmp_path):
     dc.safe_extract(zp, str(d))
     tables, uris = dc.read_dwca_folder(str(d))
     assert tables[0][1] == dc.ROW_EVENT and len(tables[0][3]) == 2
+
+
+class FakeRangeSession:
+    """Serves a local file through HTTP Range semantics."""
+    def __init__(self, path):
+        self.data = open(path, 'rb').read()
+        self.requests = 0
+
+    def get(self, url, params=None, timeout=None, headers=None, stream=False):
+        self.requests += 1
+        a, b = headers['Range'].split('=')[1].split('-')
+        body = self.data[int(a):int(b) + 1]
+
+        class R:
+            status_code = 206
+            content = body
+
+        return R()
+
+
+def test_remote_zip_extracts_only_tables(tmp_path):
+    zpath = tmp_path / 'big.zip'
+    with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('images/a.png', os.urandom(3_000_000))
+        z.writestr('data/occ.csv', 'species,lat,lon\nAbra alba,44.1,29.2\n')
+        z.writestr('README.txt', 'notes')
+    sess = FakeRangeSession(zpath)
+    n, k, mb, notes = dc.remote_zip_extract(sess, 'http://x', os.path.getsize(zpath), str(tmp_path / 'out'))
+    assert (n, k) == (3, 1)
+    assert (tmp_path / 'out' / 'data' / 'occ.csv').read_text().startswith('species')
+    assert mb < 1.5  # the 3 MB image is never transferred
+
+
+def test_reference_list_is_not_occurrence_data():
+    df = pd.DataFrame({'Scientific_name': [f'Genus{i} species' for i in range(600)],
+                       'Family': ['Fam'] * 600, 'Order': ['Ord'] * 600})
+    m = dc.map_columns(list(df.columns))
+    assert dc.is_reference_list('Fish_3letter_Codes_2014.xls::Sheet1', df, m)
+    obs = df.assign(Latitude=44.0, Longitude=29.0)
+    assert not dc.is_reference_list('Fish_3letter_Codes_2014.xls::Sheet1', obs, dc.map_columns(list(obs.columns)))
+
+
+def test_taxon_by_sample_matrix_is_not_reference_list():
+    df = pd.DataFrame({'Species': [f'Genus{i} species' for i in range(600)],
+                       'Family': ['Fam'] * 600, 'Order': ['Ord'] * 600})
+    for k in range(6):
+        df[f'S{k}'] = range(600)
+    assert not dc.is_reference_list('ASV_taxonomy.csv', df, dc.map_columns(list(df.columns)))

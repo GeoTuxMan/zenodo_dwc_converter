@@ -38,7 +38,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 TOOL = f'zenodo_dwc_converter v{__version__}'
 
 ZENODO_API = 'https://zenodo.org/api/records'
@@ -50,6 +50,10 @@ MAX_FILES_PER_DATASET = 15
 MAX_ROWS_PER_TABLE = 300_000
 MAX_OCCURRENCES = 500_000
 MAX_UNZIPPED_MB = 200
+# --large-files: files above MAX_FILE_MB are read in parts, not downloaded whole
+LARGE_TEXT_HEAD_MB = 50        # big text tables: only the first 50 MB (HTTP Range)
+LARGE_EXCEL_MAX_MB = 150       # big spreadsheets are downloaded whole up to this size
+REMOTE_MEMBER_MAX_MB = 500     # members of a remote zip larger than this are skipped
 
 STATUS_CONVERTED = 'Converted'
 STATUS_PARTIAL = 'Partial'
@@ -1519,6 +1523,197 @@ def download(session, url, dest, token=''):
     return dest
 
 
+class HttpRangeFile(io.RawIOBase):
+    """Read-only, seekable view of a remote file through HTTP Range requests, so that
+    zipfile can list and extract single members of a multi-GB archive without
+    downloading it. Blocks of 1 MB are cached (16 at most)."""
+    BLOCK = 1 << 20
+
+    def __init__(self, session, url, size, token=''):
+        super().__init__()
+        self.session, self.url, self.size = session, url, size
+        self.params = {'access_token': token} if token else {}
+        self.pos = 0
+        self.blocks = {}
+        self.fetched = 0
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self.pos
+
+    def seek(self, offset, whence=0):
+        base = {0: 0, 1: self.pos, 2: self.size}[whence]
+        self.pos = max(0, min(self.size, base + offset))
+        return self.pos
+
+    def _block(self, n):
+        if n not in self.blocks:
+            start = n * self.BLOCK
+            end = min(self.size, start + self.BLOCK) - 1
+            last = None
+            for attempt in range(5):
+                try:
+                    r = self.session.get(self.url, params=self.params, timeout=(15, 90),
+                                         headers={'Range': f'bytes={start}-{end}'})
+                except requests.RequestException as e:
+                    last = e
+                else:
+                    if r.status_code == 206:
+                        break
+                    last = RuntimeError(f'range request HTTP {r.status_code}')
+                    if r.status_code == 200:
+                        raise last  # Range ignored: do not pull the whole file
+                time.sleep(10 * (attempt + 1))
+            else:
+                raise last
+            if len(self.blocks) >= 16:
+                self.blocks.pop(next(iter(self.blocks)))
+            self.blocks[n] = r.content
+            self.fetched += len(r.content)
+        return self.blocks[n]
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = self.size - self.pos
+        out = bytearray()
+        while n > 0 and self.pos < self.size:
+            b = self._block(self.pos // self.BLOCK)
+            off = self.pos % self.BLOCK
+            chunk = b[off:off + n]
+            if not chunk:
+                break
+            out += chunk
+            self.pos += len(chunk)
+            n -= len(chunk)
+        return bytes(out)
+
+    def readinto(self, buf):
+        data = self.read(len(buf))
+        buf[:len(data)] = data
+        return len(data)
+
+
+def _trim_to_last_line(path):
+    """Drop the incomplete last line of a truncated text file."""
+    with open(path, 'rb+') as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(max(0, size - (1 << 20)))
+        tail = fh.read()
+        cut = tail.rfind(b'\n')
+        if cut >= 0:
+            fh.truncate(size - len(tail) + cut + 1)
+
+
+def download_head(session, url, dest, nbytes, token=''):
+    """Download only the first nbytes of a large text table."""
+    if os.path.exists(dest):
+        return dest
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = f'{dest}.{os.getpid()}.part'
+    params = {'access_token': token} if token else {}
+    with session.get(url, params=params, stream=True, timeout=(15, 90),
+                     headers={'Range': f'bytes=0-{nbytes - 1}'}) as r:
+        if r.status_code not in (200, 206):
+            raise RuntimeError(f'download HTTP {r.status_code}')
+        got = 0
+        with open(tmp, 'wb') as fh:
+            for chunk in r.iter_content(1 << 16):
+                fh.write(chunk[:nbytes - got])
+                got += len(chunk)
+                if got >= nbytes:
+                    break
+    _trim_to_last_line(tmp)
+    os.replace(tmp, dest)
+    return dest
+
+
+def remote_zip_extract(session, url, size, dest, token=''):
+    """Extract only the tabular members of a large remote zip (HTTP Range).
+    Returns (n members, n members extracted, MB transferred, notes)."""
+    rf = HttpRangeFile(session, url, size, token)
+    notes = []
+    with zipfile.ZipFile(io.BufferedReader(rf, buffer_size=1 << 16)) as z:
+        infos = [i for i in z.infolist() if not i.is_dir() and '__MACOSX' not in i.filename]
+        is_dwca = any(os.path.basename(i.filename).lower() == 'meta.xml' for i in infos)
+        want = (TABULAR_EXT - {'.zip'}) | {'.dat'} | ({'.xml'} if is_dwca else set())
+        cand = []
+        for i in infos:
+            name = i.filename
+            if name.startswith('/') or '..' in name.replace('\\', '/').split('/') or ':' in name:
+                continue
+            ext = os.path.splitext(name)[1].lower()
+            base = os.path.basename(name).lower()
+            if ext not in want or re.match(r'(readme|license|licence|checksum|md5)', base):
+                continue
+            if i.file_size > REMOTE_MEMBER_MAX_MB * 1024 * 1024:
+                notes.append(f'{base}: {i.file_size / 1e6:.0f} MB member skipped')
+                continue
+            cand.append(i)
+        prio = {'.xml': -1, '.csv': 0, '.tsv': 0, '.xlsx': 1, '.xls': 1, '.ods': 1,
+                '.txt': 2, '.tab': 2, '.dat': 2}
+        cand.sort(key=lambda i: (prio.get(os.path.splitext(i.filename)[1].lower(), 9), i.file_size))
+        cand = cand[:MAX_FILES_PER_DATASET * 2]
+        head = LARGE_TEXT_HEAD_MB * 1024 * 1024
+        for i in cand:
+            target = os.path.join(dest, i.filename)
+            if len(target) > 230:  # Windows MAX_PATH: flatten deep members
+                h = hashlib.md5(i.filename.encode()).hexdigest()[:8]
+                target = os.path.join(dest, f'{h}_{os.path.basename(i.filename)[-60:]}')
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            text = os.path.splitext(i.filename)[1].lower() in ('.csv', '.tsv', '.txt', '.tab', '.dat')
+            cut = text and i.file_size > head
+            with z.open(i) as src, open(target, 'wb') as dst:
+                if cut:
+                    dst.write(src.read(head))
+                else:
+                    shutil.copyfileobj(src, dst)
+            if cut:
+                _trim_to_last_line(target)
+                notes.append(f'{os.path.basename(i.filename)}: first {LARGE_TEXT_HEAD_MB} MB read')
+    return len(infos), len(cand), rf.fetched / 1e6, notes
+
+
+def fetch_large(session, f, rec_dir, extract_root, token=''):
+    """--large-files: get the usable part of a file above MAX_FILE_MB.
+    Returns (local path, note). For a zip the path is that of the zip (never downloaded),
+    whose extraction folder has been filled; read_tables then walks that folder."""
+    key, size = f['key'], f['size'] or 0
+    ext = os.path.splitext(key)[1].lower()
+    safe = re.sub(r'[\\/:*?"<>|]', '_', key)
+    if ext in ('.csv', '.tsv', '.txt', '.tab'):
+        dest = os.path.join(rec_dir, '_head', safe)
+        download_head(session, f['url'], dest, LARGE_TEXT_HEAD_MB * 1024 * 1024, token)
+        return dest, f'{key}: {size / 1e6:.0f} MB, only the first {LARGE_TEXT_HEAD_MB} MB read'
+    if ext == '.zip':
+        d = os.path.join(extract_root, re.sub(r'[^\w.-]', '_', key))
+        marker = os.path.join(d, '_remote_zip.json')
+        if os.path.exists(marker):
+            with open(marker, encoding='utf-8') as fh:
+                info = json.load(fh)
+        else:
+            n, k, mb, notes = remote_zip_extract(session, f['url'], size, d, token)
+            info = {'members': n, 'extracted': k, 'mb': round(mb, 1), 'notes': notes}
+            os.makedirs(d, exist_ok=True)
+            with open(marker, 'w', encoding='utf-8') as fh:
+                json.dump(info, fh)
+        note = (f'{key}: {size / 1e6:.0f} MB zip read remotely - {info["extracted"]} of '
+                f'{info["members"]} files are tables ({info["mb"]} MB transferred)')
+        if info['notes']:
+            note += '; ' + '; '.join(info['notes'][:3])
+        return os.path.join(rec_dir, safe), note
+    if ext in ('.xlsx', '.xlsm', '.xls', '.ods') and size <= LARGE_EXCEL_MAX_MB * 1024 * 1024:
+        dest = os.path.join(rec_dir, safe)
+        download(session, f['url'], dest, token)
+        return dest, f'{key}: {size / 1e6:.0f} MB spreadsheet downloaded whole'
+    raise ValueError(f'{size / 1e6:.0f} MB, cannot be read in parts')
+
+
 # ---------------------------------------------------------------------------
 # Dataset conversion
 # ---------------------------------------------------------------------------
@@ -1674,7 +1869,32 @@ def bbox_temporal(df):
     return bbox, temporal
 
 
-def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_dir=None):
+REFERENCE_NAME_RE = re.compile(r'code|lookup|look_up|checklist|species.?list|taxa.?list|taxonomy|'
+                               r'classification|glossary|dictionary|synonym', re.I)
+
+
+def is_reference_list(name, df, mapping):
+    """True for taxon lists (code lists, checklists, taxonomies) that carry no observations:
+    one row per taxon, higher classification columns, no coordinates or stations."""
+    cols = [c for c, t in mapping.items() if t == 'scientificName']
+    if not cols or len(df) < 50:
+        return False
+    terms = set(mapping.values())
+    if terms & {'decimalLatitude', 'decimalLongitude', 'locationID', 'locality', 'eventID',
+                'individualCount', 'organismQuantity'}:
+        return False
+    taxa = df[cols[0]].dropna().astype(str).str.strip()
+    if len(taxa) < 50 or taxa.nunique() / len(taxa) < 0.9:
+        return False
+    numeric = sum(pd.to_numeric(df[c], errors='coerce').notna().mean() > 0.8 for c in df.columns)
+    if numeric >= 5:  # taxon x sample matrix (counts, reads, biomass): real data
+        return False
+    higher = terms & {'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'vernacularName'}
+    return bool(REFERENCE_NAME_RE.search(str(name))) or (len(higher) >= 2 and len(taxa) >= 500)
+
+
+def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_dir=None,
+                    large_files=False):
     record_id = record_id_of(item)
     res = new_result(item, record_id)
     if str(item.get('Access conditions', '')).lower() != 'open':
@@ -1691,11 +1911,14 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
         res['issues'].append('no tabular files in the record')
         return res
     small = [f for f in files if (f['size'] or 0) <= MAX_FILE_MB * 1024 * 1024]
-    if not small:
-        res['issues'].append(f'all tabular files larger than {MAX_FILE_MB} MB')
+    large = [f for f in files if (f['size'] or 0) > MAX_FILE_MB * 1024 * 1024]
+    if large and large_files:
+        small += sorted(large, key=lambda f: f['size'])
+    elif not small:
+        res['issues'].append(f'all tabular files larger than {MAX_FILE_MB} MB (use --large-files)')
         return res
-    if len(small) < len(files):
-        res['issues'].append(f'{len(files) - len(small)} file(s) > {MAX_FILE_MB} MB skipped')
+    elif large:
+        res['issues'].append(f'{len(large)} file(s) > {MAX_FILE_MB} MB skipped (use --large-files)')
     prio = {'.csv': 0, '.tsv': 0, '.xlsx': 1, '.xls': 1, '.ods': 1, '.txt': 2, '.tab': 2, '.zip': 3}
     small.sort(key=lambda f: (prio.get(os.path.splitext(f['key'])[1].lower(), 9), f['size'] or 0))
     small = small[:MAX_FILES_PER_DATASET]
@@ -1707,9 +1930,13 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
     for f in small:
         dest = os.path.join(rec_dir, re.sub(r'[\\/:*?"<>|]', '_', f['key']))
         try:
-            download(session, f['url'], dest, token)
+            if (f['size'] or 0) > MAX_FILE_MB * 1024 * 1024:
+                dest, note = fetch_large(session, f, rec_dir, extract_root, token)
+                res['issues'].append(note)
+            else:
+                download(session, f['url'], dest, token)
         except Exception as e:
-            res['issues'].append(f'{f["key"]}: download failed ({e})')
+            res['issues'].append(f'{f["key"]}: download failed ({str(e)[:160]})')
             continue
         res['source_files'].append(f['key'])
         ext = os.path.splitext(f['key'])[1].lower().lstrip('.')
@@ -1765,6 +1992,13 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
                     station_coords[str(r[key_col]).strip()] = (la, lo)
 
     global TAXON_VALIDATOR
+    tables_kept = []
+    for name, df in tables:
+        if is_reference_list(name, df, map_columns(list(df.columns), override.get(name) or override.get('*'))):
+            res['issues'].append(f'{name}: taxon reference list (codes / checklist), not occurrences - skipped')
+        else:
+            tables_kept.append((name, df))
+    tables = tables_kept
     TAXON_VALIDATOR = lambda names: {n for n, m in worms.match(names).items() if m}
     default_taxon = title_taxon(meta, worms)
     events, occs, emofs, layouts = {}, [], [], set()
@@ -1998,6 +2232,12 @@ def main(argv=None):
     ap.add_argument('--retry-passes', type=int, default=2,
                     help='extra passes over datasets skipped because Zenodo was unavailable')
     ap.add_argument('--retry-wait', type=int, default=600, help='seconds to wait before a retry pass')
+    ap.add_argument('--merge', action='store_true',
+                    help='update the existing conversion_results.json in --out instead of replacing it '
+                         '(for re-runs of a subset with --ids)')
+    ap.add_argument('--large-files', action='store_true',
+                    help=f'also process files > {MAX_FILE_MB} MB: zips are read remotely (HTTP Range, '
+                         f'tables only), text tables from their first {LARGE_TEXT_HEAD_MB} MB')
     args = ap.parse_args(argv)
 
     token = os.environ.get('ZENODO_TOKEN', '')
@@ -2011,6 +2251,15 @@ def main(argv=None):
     session = robust_session()
     worms = Worms(os.path.join(args.cache, '_worms_cache.json'), session)
     results = {}
+    previous = {}
+    prev_path = os.path.join(args.out, 'conversion_results.json')
+    if args.merge and os.path.exists(prev_path):
+        with open(prev_path, encoding='utf-8') as fh:
+            previous = {r['record_id']: r for r in json.load(fh)['datasets']}
+
+    def merged():
+        return list({**previous, **results}.values())
+
     print(f'{TOOL}: {len(todo)} datasets')
 
     def unavailable(res):
@@ -2026,7 +2275,8 @@ def main(argv=None):
             rid = record_id_of(item)
             t0 = time.time()
             try:
-                res = convert_dataset(item, session, worms, args.cache, args.out, token, args.mapping_dir)
+                res = convert_dataset(item, session, worms, args.cache, args.out, token, args.mapping_dir,
+                                      args.large_files)
             except Exception as e:
                 res = new_result(item, rid)
                 res['status'] = STATUS_FAILED
@@ -2035,11 +2285,11 @@ def main(argv=None):
             print(f'[{k}/{len(queue)}] {rid} {res["status"]:<13} ev={res["n_events"]} occ={res["n_occurrences"]} '
                   f'emof={res["n_emof"]} ({time.time() - t0:.0f}s) {item.get("Data title", "")[:60]}', flush=True)
             if k % 10 == 0:
-                write_reports(list(results.values()), args.out)
+                write_reports(merged(), args.out)
         queue = [it for it in queue if unavailable(results[record_id_of(it)])]
         if not queue:
             break
-    payload = write_reports(list(results.values()), args.out)
+    payload = write_reports(merged(), args.out)
     print(json.dumps(payload['summary'], indent=2))
     return payload
 
