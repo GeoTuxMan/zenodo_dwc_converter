@@ -1,0 +1,137 @@
+import os
+import sys
+import zipfile
+
+import pandas as pd
+import pytest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+import dwc_converter as dc  # noqa: E402
+
+DATA = os.path.join(HERE, 'data')
+
+
+class FakeWorms:
+    """Offline stand-in for the WoRMS matcher."""
+    IDS = {'Skeletonema costatum': 149074, 'Chaetoceros': 148985, 'Calanus helgolandicus': 104466,
+           'Acartia clausi': 149755, 'Noctiluca scintillans': 109391, 'Mytilus galloprovincialis': 140481,
+           'Nephtys hombergii': 130359, 'Abra alba': 141433, 'Pleurobrachia pileus': 106386, 'Prorocentrum cordatum': 109634}
+
+    def match(self, names):
+        return {n: ({'AphiaID': self.IDS[n], 'rank': 'Species', 'kingdom': 'Animalia', 'phylum': '',
+                     'class': '', 'order': '', 'family': '', 'genus': n.split()[0], 'authority': ''}
+                    if n in self.IDS else None) for n in names}
+
+
+def test_normalise_and_map():
+    cols = ['Station', 'Date', 'Latitude (N)', 'Longitude (E)', 'Depth (m)', 'Species', 'Abundance (cells/L)']
+    m = dc.map_columns(cols)
+    assert m['Latitude (N)'] == 'decimalLatitude'
+    assert m['Longitude (E)'] == 'decimalLongitude'
+    assert m['Species'] == 'scientificName'
+    assert m['Date'] == 'eventDate'
+    assert m['Station'] == 'locationID'
+    assert m['Depth (m)'] == '_depth'
+    assert 'Abundance (cells/L)' not in m          # measurement column -> eMoF
+    assert dc.map_columns(['decimalLatitude', 'AphiaID'])['AphiaID'] == 'scientificNameID'
+
+
+def test_override():
+    m = dc.map_columns(['col A', 'Species'], {'col A': 'locality'})
+    assert m['col A'] == 'locality'
+
+
+@pytest.mark.parametrize('raw,exp', [
+    ('24.03.2010', '2010-03-24'), ('2010-08-24', '2010-08-24'), ('3/24/2010', '2010-03-24'),
+    ('2010', '2010'), ('2006-2015', '2006/2015'), ('40261', '2010-03-24'),
+    ('2010-03-24 00:00:00', '2010-03-24'), ('12 Mar 2011', '2011-03-12'), ('garbage', None)])
+def test_dates(raw, exp):
+    assert dc.parse_date(raw) == exp
+
+
+def test_coordinates():
+    assert dc.parse_coordinate('44,25', True) == 44.25
+    assert abs(dc.parse_coordinate("44°08.3'N", True) - 44.138333) < 1e-5
+    assert dc.parse_coordinate("28 38 54 W", False) < 0
+    assert dc.parse_coordinate('S 12.5', True) == -12.5
+    assert dc.parse_coordinate('95', True) is None
+
+
+def test_depth_and_taxa():
+    assert dc.parse_depth('0-10') == (0, 10)
+    assert dc.parse_depth('-12') == (12, 12)
+    assert dc.clean_taxon('Chaetoceros sp.') == ('Chaetoceros', None, 'genus')
+    assert dc.clean_taxon('cf. Acartia clausi')[0:2] == ('Acartia clausi', 'cf.')
+    assert dc.clean_taxon('Total')[0] is None
+    assert dc.clean_taxon('123')[0] is None
+
+
+def test_header_detection_and_long_layout():
+    tables = dc.read_tables(os.path.join(DATA, 'long_sample.csv'), DATA)
+    assert len(tables) == 1
+    name, df = tables[0]
+    assert list(df.columns)[0] == 'Station'           # title row skipped
+    m = dc.map_columns(list(df.columns))
+    built = dc.build_from_table(df, m, 'T1', name, 'Phytoplankton', '')
+    assert built['layout'] == 'long'
+    assert len(built['occ']) == 3                     # 'Total' row dropped
+    assert len(built['events']) == 2
+    statuses = {o['scientificName']: o['occurrenceStatus'] for o in built['occ']}
+    assert statuses['Chaetoceros'] == 'absent'
+    ev = next(e for e in built['events'].values() if e['locationID'] == 'Mamaia')
+    assert ev['eventDate'] == '2010-03-24' and ev['minimumDepthInMeters'] == 0 and ev['maximumDepthInMeters'] == 10
+    types = {e['measurementType'] for e in built['emof']}
+    assert any('per unit volume' in t for t in types)
+    abund = [e for e in built['emof'] if e['measurementUnit'] == 'Number per litre']
+    assert abund and abund[0]['measurementTypeID'].endswith('SDBIOL01/')
+
+
+def test_wide_species_columns():
+    name, df = dc.read_tables(os.path.join(DATA, 'wide_sample.csv'), DATA)[0]
+    m = dc.map_columns(list(df.columns))
+    built = dc.build_from_table(df, m, 'T2', name, 'Zooplankton', '')
+    assert built['layout'] == 'wide'
+    assert len(built['events']) == 2
+    # 8 cells, 2 empty -> 6 occurrences, 1 zero -> absent
+    assert len(built['occ']) == 6
+    assert sum(o['occurrenceStatus'] == 'absent' for o in built['occ']) == 1
+    assert {e['eventDate'] for e in built['events'].values()} == {'2015-06', '2015-07'}
+
+
+def test_wide_sample_columns():
+    name, df = dc.read_tables(os.path.join(DATA, 'transposed_sample.csv'), DATA)[0]
+    m = dc.map_columns(list(df.columns))
+    built = dc.build_from_table(df, m, 'T3', name, 'Benthos', '')
+    assert built['layout'] == 'wide'
+    assert len(built['events']) == 4
+    assert len(built['occ']) == 12
+
+
+def test_archive_roundtrip(tmp_path):
+    name, df = dc.read_tables(os.path.join(DATA, 'long_sample.csv'), DATA)[0]
+    built = dc.build_from_table(df, dc.map_columns(list(df.columns)), 'T1', name, 'Phytoplankton', '')
+    res = {'n_taxa': 0, 'worms_matched_pct': None, 'issues': []}
+    occ = dc.apply_worms(pd.DataFrame(built['occ']), FakeWorms(), res)
+    assert res['worms_matched_pct'] == 100.0
+    assert occ['scientificNameID'].str.startswith('urn:lsid:marinespecies.org:taxname:').all()
+    ev = dc.tidy_frame(list(built['events'].values()), dc.EVENT_TERMS, 'eventID')
+    oc = dc.tidy_frame(occ.to_dict('records'), dc.OCC_TERMS, 'occurrenceID')
+    oc['id'] = oc['eventID']
+    em = dc.tidy_frame(built['emof'], dc.EMOF_TERMS, 'eventID').drop(columns=['eventID'])
+    zp = str(tmp_path / 'x_dwca.zip')
+    meta = {'metadata': {'title': 'Test and data', 'creators': [{'name': 'Doe, Jane', 'affiliation': 'NIMRD'}],
+                         'description': '<p>desc</p>', 'license': {'id': 'cc-by-4.0'},
+                         'publication_date': '2026-01-01'}}
+    dc.write_dwca(zp, ('event.txt', dc.ROW_EVENT, ev),
+                  [('occurrence.txt', dc.ROW_OCCURRENCE, oc), ('extendedmeasurementorfact.txt', dc.ROW_EMOF, em)],
+                  dc.eml_xml(meta, 'x', ('2010-03-24', '2010-08-24'), (28.6, 28.7, 44.1, 44.3)))
+    assert dc.verify_dwca(zp) == []
+    with zipfile.ZipFile(zp) as z:
+        assert {'meta.xml', 'eml.xml', 'event.txt', 'occurrence.txt',
+                'extendedmeasurementorfact.txt'} <= set(z.namelist())
+    # an existing DwC-A is read back through meta.xml
+    d = tmp_path / 'unz'
+    dc.safe_extract(zp, str(d))
+    tables, uris = dc.read_dwca_folder(str(d))
+    assert tables[0][1] == dc.ROW_EVENT and len(tables[0][3]) == 2
