@@ -310,7 +310,7 @@ breaker after three server errors and retries the skipped datasets in extra pass
 * Joins between tables are limited to station → coordinates look-ups.
 * NetCDF, shapefiles, R data and sequence files are out of scope.
 
-Archives should be reviewed (e.g. with Task 2 QC / EMODnetBiocheck) before publication on the IPT.
+Archives should be reviewed (e.g. with Task 2 QC / EMODnetBiocheck).
 
 ## 11. Credits
 Developed at NIMRD "Grigore Antipa", Constanța, Romania, for EMODnet Biology. Each converted
