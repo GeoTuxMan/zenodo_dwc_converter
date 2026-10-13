@@ -1,7 +1,7 @@
 # Zenodo → Darwin Core Converter — Task 3
 
 Converts the marine biology datasets discovered on Zenodo into **Darwin Core Archives (DwC-A)**
-that can be published through the EMODnet Biology / EurOBIS IPT.
+.
 
 This is **Task 3** of the *Zenodo Inventory* project:
 
