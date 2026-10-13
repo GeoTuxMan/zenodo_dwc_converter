@@ -207,11 +207,24 @@ def test_taxon_by_sample_matrix_is_not_reference_list():
 
 def test_dataset_terms_from_zenodo_metadata():
     meta = {'metadata': {'title': 'Black Sea  benthos', 'doi': '10.5281/zenodo.1',
-                         'creators': [{'name': 'A', 'affiliation': None}, {'name': 'B', 'affiliation': 'NIMRD'}],
+                         'creators': [{'name': 'A', 'affiliation': None}, {'name': 'B', 'affiliation': 'VLIZ'}],
                          'license': {'id': 'cc-by-nc-4.0'}}}
     t = dc.dataset_terms(meta, '1')
     assert t == {'datasetName': 'Black Sea benthos', 'datasetID': 'https://doi.org/10.5281/zenodo.1',
-                 'institutionCode': 'NIMRD',
+                 'institutionCode': 'VLIZ', 'institutionID': '',
                  'license': 'http://creativecommons.org/licenses/by-nc/4.0/legalcode'}
     df = dc.add_dataset_terms(pd.DataFrame({'id': ['e1', 'e2'], 'institutionCode': ['VLIZ', '']}), meta, '1')
-    assert list(df['institutionCode']) == ['VLIZ', 'NIMRD']
+    assert list(df['institutionCode']) == ['VLIZ', 'VLIZ']
+    assert 'institutionID' not in df.columns
+
+
+def test_dataset_terms_edmo_code():
+    meta = {'metadata': {'title': 'x', 'creators': [
+        {'name': 'A', 'affiliation': 'University of Bucharest'},
+        {'name': 'Institutul Naţional de Cercetare Dezvoltare Marină Grigore Antipa', 'affiliation': None}]}}
+    t = dc.dataset_terms(meta, '5')
+    assert t['institutionCode'] == '697'
+    assert t['institutionID'] == 'https://edmo.seadatanet.org/report/697'
+    meta['metadata']['creators'] = [{'name': 'B', 'affiliation': 'National Institute for Marine Research '
+                                     'and Development "Grigore Antipa" (NIMRD): Constanta, RO'}]
+    assert dc.dataset_terms(meta, '5')['institutionCode'] == '697'

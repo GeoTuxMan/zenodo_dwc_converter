@@ -211,7 +211,7 @@ EVENT_TERMS = ['eventID', 'parentEventID', 'fieldNumber', 'eventDate', 'eventTim
                'decimalLatitude', 'decimalLongitude', 'geodeticDatum',
                'coordinateUncertaintyInMeters', 'minimumDepthInMeters', 'maximumDepthInMeters',
                'habitat', 'samplingProtocol', 'sampleSizeValue', 'sampleSizeUnit',
-               'eventRemarks', 'datasetName', 'datasetID', 'institutionCode', 'license']
+               'eventRemarks', 'datasetName', 'datasetID', 'institutionCode', 'institutionID', 'license']
 OCC_TERMS = ['occurrenceID', 'eventID', 'basisOfRecord', 'occurrenceStatus', 'catalogNumber',
              'scientificName', 'scientificNameID', 'scientificNameAuthorship', 'taxonRank',
              'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'vernacularName',
@@ -1178,14 +1178,28 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
 # ---------------------------------------------------------------------------
 # DwC-A writing
 # ---------------------------------------------------------------------------
+# Institutions with a known EDMO code (https://edmo.seadatanet.org): matched against creator
+# names and affiliations; the code is written to institutionCode, the EDMO URL to institutionID.
+EDMO_CODES = [
+    (re.compile(r'\bNIMRD\b|\bINCDM\b|Grigore\s+Antipa', re.I), '697'),
+]
+
+
+def edmo_code(text):
+    return next((code for rx, code in EDMO_CODES if rx.search(text or '')), '')
+
+
 def dataset_terms(meta, record_id):
     """Dataset-level terms required by EMODnet Biology (BioCheck): datasetName, datasetID,
-    institutionCode (affiliation of the first creator that has one, as given on Zenodo) and
-    license. Values that Zenodo does not provide are left empty for the data manager."""
+    institutionCode / institutionID (EDMO code when a creator belongs to an institution of
+    EDMO_CODES, otherwise the affiliation of the first creator that has one, as given on Zenodo)
+    and license. Values that Zenodo does not provide are left empty for the data manager."""
     md = meta.get('metadata', {}) if isinstance(meta, dict) else {}
     doi = md.get('doi') or meta.get('doi') or ''
-    inst = next((str(c['affiliation']).strip() for c in md.get('creators', []) or []
-                 if c.get('affiliation')), '')
+    creators = md.get('creators', []) or []
+    edmo = next((code for c in creators for code in
+                 (edmo_code(c.get('affiliation')), edmo_code(c.get('name'))) if code), '')
+    inst = edmo or next((str(c['affiliation']).strip() for c in creators if c.get('affiliation')), '')
     lic_id = ((md.get('license') or {}).get('id') or '').lower()
     lic_url = LICENSE_URLS.get(lic_id, ('', ''))[1]
     m = re.fullmatch(r'cc-(by(?:-nc)?(?:-nd|-sa)?)-(\d\.\d)', lic_id)
@@ -1194,6 +1208,7 @@ def dataset_terms(meta, record_id):
     return {'datasetName': re.sub(r'\s+', ' ', md.get('title', '') or '').strip(),
             'datasetID': f'https://doi.org/{doi}' if doi else f'https://zenodo.org/records/{record_id}',
             'institutionCode': inst[:250],
+            'institutionID': f'https://edmo.seadatanet.org/report/{edmo}' if edmo else '',
             'license': lic_url or lic_id}
 
 

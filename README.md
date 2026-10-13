@@ -141,7 +141,8 @@ because EMODnetBiocheck treats `datasetName` and `institutionCode` as required:
 |---|---|
 | `datasetName` | Zenodo title |
 | `datasetID` | DOI (`https://doi.org/…`) |
-| `institutionCode` | affiliation of the first creator that has one - **to be checked by the data manager**; left empty when Zenodo gives no affiliation |
+| `institutionCode` | EDMO code when a creator (name or affiliation) belongs to an institution listed in `EDMO_CODES` — NIMRD "Grigore Antipa" = **697**; otherwise the affiliation of the first creator that has one - **to be checked by the data manager**; left empty when Zenodo gives no affiliation |
+| `institutionID` | `https://edmo.seadatanet.org/report/<EDMO code>` when the EDMO code is known |
 | `license` | Creative Commons licence URL |
 
 ### Robustness rules
