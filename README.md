@@ -172,6 +172,31 @@ records when neither Zenodo nor the data name the institution; it overrides both
   number of rows filled this way is reported in `issues`. Example: 15119469 (GeoEcoMar
   zooplankton, July 2024 cruise), where the date was typed only on some rows of each sample.
 
+* tables whose taxon column holds no taxa - metadata sheets (persons, glossary, project list),
+  data dictionaries ("Column name / Description / Unit") - are skipped when fewer than 25 % of
+  their distinct names (at least 5) match WoRMS;
+* R-style taxon names coming from column headers are restored
+  (`Cladophora.aff.coelothrix` → `Cladophora coelothrix` + `identificationQualifier = aff.`,
+  `Balanus.sp` → `Balanus`);
+* headers such as `Sampling_station_country_name`, `Project_name` or `ShipName` are never read as
+  `scientificName`;
+* tables with a Kingdom ... Genus, Species hierarchy where `Species` holds only the epithet
+  (`pertusum`, `cf. oculata?`) get the name Genus + epithet, else the lowest filled rank
+  (`Umbellula`, `Hexactinellida`);
+* a `time` column holding date and time (`2021-07-06 14:31:39 UTC`) gives the `eventDate` when no
+  date column exists; a time without a year is never read as a date; `20150622` is read as
+  2015-06-22;
+* text files written by R `write.table` (header one field shorter than the rows, because of the
+  row names) are realigned, so columns are not shifted by one.
+
+### Relational datasets
+Datasets exported from a database keep dates, coordinates and taxon names in lookup tables
+(records → fieldwork → stations, records → taxa). A table with a key column `<x>_ID` / `<x> code`
+holding unique values is a lookup table; every table where that column repeats receives the
+lookup's other columns through a join, in up to three rounds. Example: MEDUSA (20713997) -
+jellyfish records get the date from `Fieldwork_dataset`, coordinates from
+`Sampling_stations_dataset` and the name from `WORMS_dataset`.
+
 ### Station tables
 If a dataset has a separate station table (station/locality + coordinates, no taxa), events
 without coordinates receive them through the station code.
@@ -264,26 +289,28 @@ python -m pytest -q tests
 Every archive is re-opened after writing: `meta.xml` must parse, all referenced files must
 exist, column counts must match `meta.xml` and core ids must be unique.
 
-## 9. Latest run (12 October 2026)
+## 9. Latest run (13 October 2026)
 
 Full run over all 321 open *Included* records of the Task 1 inventory (Black Sea first, then
 datasets whose title/notes mention occurrence, abundance, survey or monitoring); the 22 records
 whose tables were all above 30 MB (106 GB in total) were then processed with `--large-files`,
-and all 167 archives were rebuilt with `--large-files` and the dataset-level terms.
+and all 321 records were reconverted with `--large-files` after the fixes of 13 October
+(see *Relational datasets* and the taxon-name rules above).
 
 | Status | Datasets |
 |---|---|
-| Converted | 23 |
-| Partial | 144 |
-| Failed | 154 |
+| Converted | 29 |
+| Partial | 123 |
+| Failed | 169 |
 | Not attempted | 0 |
 
-167 archives written (106 Event core, 61 Occurrence core; 117 long, 50 wide layouts) —
-633,368 events, 5,253,700 occurrences, 2,153,369 eMoF records; mean WoRMS match 76 %. All
+152 archives written (100 Event core, 52 Occurrence core; 104 long, 48 wide layouts) —
+634,371 events, 5,782,489 occurrences, 2,578,396 eMoF records; mean WoRMS match 88 %
+(76 % before the fixes, which removed metadata sheets and data dictionaries read as taxa). All
 archives pass the structural check. Most *Partial* datasets lack coordinates and/or dates in
 the files themselves (typical of experiment / supplementary-material uploads). Of the *Failed*
-ones, 120 hold no taxon-level data (traits, genetics, effort tables, model output, acoustic or
-satellite products) and 34 have no readable table (images, audio, rasters, scripts).
+ones, 142 hold no taxon-level data (traits, genetics, effort tables, model output, acoustic or
+satellite products, species codes without a lookup table) and 27 have no readable table (images, audio, rasters, scripts).
 
 Large-file pass: 22 records, 106 GB on Zenodo, about 0.4 GB actually transferred - 1 Converted
 (benthic amphipods SDM, 15396200: 136,405 occurrences), 2 Partial (round goby impact 5779207,
@@ -307,7 +334,7 @@ breaker after three server errors and retries the skipped datasets in extra pass
 * Heuristic mapping: unusual headers or multi-row headers may need an override.
 * Information held only in papers or README files (coordinates, dates, units) is not extracted.
 * Units are taken from header brackets only; unit-less matrices get a generic measurement type.
-* Joins between tables are limited to station → coordinates look-ups.
+* Joins between tables need a shared key column (`<x>_ID`, `<x> code`) or station → coordinates look-ups.
 * NetCDF, shapefiles, R data and sequence files are out of scope.
 
 Archives should be reviewed (e.g. with Task 2 QC / EMODnetBiocheck).

@@ -168,6 +168,65 @@ def test_institution_override(tmp_path):
     assert dc.add_dataset_terms(df, {'metadata': {'title': 'x'}}, '8', str(f)).loc[0, 'institutionCode'] == 'CNR-ISMAR-VE'
 
 
+def test_r_style_taxon_names():
+    assert dc.clean_taxon('Cladophora.aff.coelothrix') == ('Cladophora coelothrix', 'aff.', None)
+    assert dc.clean_taxon('Balanus.sp') == ('Balanus', None, 'genus')
+    assert dc.clean_taxon('Acanthella.acuta')[0] == 'Acanthella acuta'
+
+
+def test_new_coordinate_and_date_aliases():
+    m = dc.map_columns(['Sampling_station_latitude_value', 'Sampling_station_longitude_value',
+                        'Fieldwork_year_value', 'Fieldwork_month_value', 'Fieldwork_day_value', 'AccessLevelData'])
+    assert m == {'Sampling_station_latitude_value': 'decimalLatitude',
+                 'Sampling_station_longitude_value': 'decimalLongitude', 'Fieldwork_year_value': 'year',
+                 'Fieldwork_month_value': 'month', 'Fieldwork_day_value': 'day'}
+    assert dc.map_columns(['Deployment LAT', 'Deployment LON']) == {'Deployment LAT': 'decimalLatitude',
+                                                                  'Deployment LON': 'decimalLongitude'}
+
+
+def test_relational_tables_joined():
+    rec = pd.DataFrame({'Record_ID': ['r1', 'r2', 'r3'], 'Taxon_ID': ['t1', 't1', 't2'],
+                        'Fieldwork_ID': ['f1', 'f1', 'f2']})
+    fw = pd.DataFrame({'Fieldwork_ID': ['f1', 'f2'], 'Fieldwork_date': ['2016-04-30', '2015-04-07'],
+                       'Station_ID': ['s1', 's2']})
+    st = pd.DataFrame({'Station_ID': ['s1', 's2'], 'Station_latitude': [43.78, 38.25],
+                       'Station_longitude': [7.64, 15.44], 'Station_country_name': ['Italy', 'Italy']})
+    tx = pd.DataFrame({'Taxon_ID': ['t1', 't2'], 'Species': ['Velella velella', 'Pelagia noctiluca']})
+    out = dict(dc.join_lookup_tables([('rec', rec), ('fw', fw), ('st', st), ('tx', tx)])[0])
+    r = out['rec']
+    assert list(r['Fieldwork_date']) == ['2016-04-30', '2016-04-30', '2015-04-07']
+    assert list(r['Station_latitude']) == [43.78, 43.78, 38.25]
+    assert list(r['Species']) == ['Velella velella', 'Velella velella', 'Pelagia noctiluca']
+    m = dc.map_columns(list(r.columns))
+    assert m.get('Species') == 'scientificName' and 'Station_country_name' not in m
+
+
+def test_hierarchy_names_composed():
+    df = pd.DataFrame({'Kingdom': ['Animalia'] * 3, 'Phylum': ['Cnidaria', 'Cnidaria', 'Porifera'],
+                       'Class': ['Anthozoa', 'Anthozoa', 'Hexactinellida'], 'Family': ['', 'Umbellulidae', ''],
+                       'Genus': ['Desmophyllum', 'Umbellula', ''], 'Species': ['cf. pertusum?', '', '']})
+    m = dc.map_columns(list(df.columns))
+    out, m2 = dc.compose_hierarchy_names(df, m)
+    assert list(out['__hier_taxon']) == ['Desmophyllum cf. pertusum', 'Umbellula', 'Hexactinellida']
+    assert m2['__hier_taxon'] == 'scientificName' and 'Species' not in m2
+
+
+def test_parse_date_datetime_and_time_only():
+    assert dc.parse_date('2021-07-06 14:31:39 UTC') == '2021-07-06T14:31Z'
+    assert dc.parse_date('2021-07-06 14:31:39 CEST') == '2021-07-06'
+    assert dc.parse_date('14:31:39') is None
+    assert dc.parse_date(20150622) == '2015-06-22'
+
+
+def test_r_row_names_header(tmp_path):
+    f = tmp_path / 'r.txt'
+    rows = [['"station"', '"year"', '"lon"', '"lat"'], ['"1"', '936', '2014', '11.4', '58.3'],
+            ['"2"', '222', '2018', '12.0', '57.4']]
+    f.write_text(''.join(chr(9).join(r) + chr(10) for r in rows))
+    df = dc.read_text_table(str(f))[0][1]
+    assert list(df['year'].astype(str)) == ['2014', '2018'] and list(df['station'].astype(str)) == ['936', '222']
+
+
 def test_archive_roundtrip(tmp_path):
     name, df = dc.read_tables(os.path.join(DATA, 'long_sample.csv'), DATA)[0]
     built = dc.build_from_table(df, dc.map_columns(list(df.columns)), 'T1', name, 'Phytoplankton', '')

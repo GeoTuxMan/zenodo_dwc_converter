@@ -106,18 +106,22 @@ SYNONYMS = {
     'fieldNumber': ['fieldnumber', 'field number'],
     'institutionCode': ['institutioncode', 'institution code'],
     'year': ['year', 'year collected', 'start year collected', 'year of collection', 'yr', 'yyyy', 'an', 'anul', 'anno', 'ano', 'jahr', 'annee', 'sampling year',
-             'year sampled', 'survey year', 'year of sampling'],
-    'month': ['month', 'month collected', 'start month collected', 'mon', 'mm', 'luna', 'mes', 'monat', 'mois', 'mese', 'sampling month'],
-    'day': ['day', 'day collected', 'start day collected', 'dd', 'zi', 'ziua', 'dia', 'tag', 'jour', 'giorno', 'day of month'],
+             'year sampled', 'survey year', 'year of sampling', 'fieldwork year'],
+    'month': ['month', 'month collected', 'start month collected', 'mon', 'mm', 'luna', 'mes', 'monat', 'mois', 'mese', 'sampling month', 'fieldwork month'],
+    'day': ['day', 'day collected', 'start day collected', 'dd', 'zi', 'ziua', 'dia', 'tag', 'jour', 'giorno', 'day of month', 'fieldwork day'],
     'decimalLatitude': ['decimallatitude', 'decimal latitude', 'latitude', 'lat', 'lat dd',
                         'lat dec', 'latitude dd', 'latitude decimal', 'latitude n', 'lat n',
                         'latitudine', 'breite', 'latitud', 'y coord', 'y coordinate', 'lat wgs84',
-                        'latitude wgs84', 'latdd', 'lat deg', 'latitude deg', 'y'],
+                        'latitude wgs84', 'latdd', 'lat deg', 'latitude deg', 'y',
+                        'station latitude', 'sampling station latitude', 'site latitude',
+                        'deployment lat', 'deployment latitude'],
     'decimalLongitude': ['decimallongitude', 'decimal longitude', 'longitude', 'lon', 'long',
                          'lng', 'lon dd', 'long dd', 'lon dec', 'longitude dd',
                          'longitude decimal', 'longitude e', 'lon e', 'long e', 'longitudine',
                          'laenge', 'lange', 'longitud', 'x coord', 'x coordinate', 'lon wgs84',
-                         'longitude wgs84', 'londd', 'lon deg', 'longitude deg', 'x'],
+                         'longitude wgs84', 'londd', 'lon deg', 'longitude deg', 'x',
+                         'station longitude', 'sampling station longitude', 'site longitude',
+                         'deployment lon', 'deployment long', 'deployment longitude'],
     # start-of-transect / haul positions: used when decimalLatitude/Longitude are empty
     '_latStart': ['start latitude', 'latitude start', 'lat start', 'start lat', 'lat1',
                   'latitude 1', 'shoot latitude'],
@@ -310,6 +314,13 @@ def _syn_index():
     return _SYN_INDEX
 
 
+# words before "name" that show a column is not a taxon name ("Sampling station country name")
+NOT_TAXON_HEADER_RE = re.compile(r'\b(country|city|town|station|site|location|locality|place|region|'
+                                 r'project|file|ship|vessel|cruise|person|coordinator|author|collector|'
+                                 r'observer|recorder|institution|dataset|field|column|variable|parameter|'
+                                 r'sheet|habitat|gear|method|common|vernacular|local|dive)\b|ship$', re.I)
+
+
 def map_columns(columns, override=None):
     """
     Map source columns to DwC terms. Returns {source column: term}; each term is used once.
@@ -373,8 +384,10 @@ def map_columns(columns, override=None):
         for k in range(1, len(words)):
             suffix = ' '.join(words[k:])
             t = idx.get(suffix)
+            if t == 'scientificName' and NOT_TAXON_HEADER_RE.search(' '.join(words[:k])):
+                break
             if t in ('scientificName', 'eventDate', 'eventID', 'locationID', 'decimalLatitude',
-                     'decimalLongitude', 'individualCount') and len(suffix) >= 4:
+                     'decimalLongitude', 'individualCount') and len(suffix) >= 4 and suffix != 'data':
                 cands.append((200 + _syn_rank(t, suffix), pos, col, t))
                 break
     assign(cands)
@@ -526,7 +539,8 @@ def parse_date(v):
     s = str(v).strip()
     if not s or s.lower() in ('nan', 'nat', 'none', 'na', 'n/a', '-'):
         return None
-    m = re.fullmatch(r'(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?', s)
+    s = re.sub(r'\s*(?:UTC|GMT)$', 'Z', s)
+    m = re.fullmatch(r'(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?', s)
     if m:
         y, mo, d, hh, mi = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
         if hh and (hh, mi) != ('00', '00'):
@@ -571,6 +585,20 @@ def parse_date(v):
     n = to_number(s)
     if n is not None and 20000 < n < 60000:                  # Excel serial date
         return (dt.date(1899, 12, 30) + dt.timedelta(days=int(n))).isoformat()
+    m = re.fullmatch(r'(1[6-9]\d{2}|20\d{2})(\d{2})(\d{2})(?:\.0)?', s)       # 20150622
+    if m:
+        try:
+            return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+        except ValueError:
+            return None
+    if not re.search(r'(?<!\d)(1[6-9]\d{2}|20\d{2})(?!\d)', s):
+        return None                                          # a time or a code, no year
+    m = re.match(r'(\d{4})-(\d{2})-(\d{2})\b', s)                # ISO date + unparsed suffix
+    if m:
+        try:
+            return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+        except ValueError:
+            return None
     try:
         ts = pd.to_datetime(s, dayfirst=True, errors='raise')
         if 1600 < ts.year <= dt.date.today().year:
@@ -602,6 +630,8 @@ def clean_taxon(name):
         return None, None, None
     s = str(name).replace('_', ' ').replace(' ', ' ')
     s = re.sub(r'\s+', ' ', s).strip().strip('"\'')
+    if ' ' not in s and re.match(r'^[A-Z][a-z]+\.[A-Za-z]', s):      # R column names
+        s = re.sub(r'\.(?=[A-Za-z])', ' ', s).strip('.')
     if not s or NON_TAXON_RE.match(s) or to_number(s) is not None or len(s) < 3:
         return None, None, None
     if not re.search(r'[A-Za-z]{3}', s):
@@ -740,7 +770,11 @@ def read_text_table(path):
     try:
         with open(path, encoding=enc, errors='replace', newline='') as fh:
             if sep == r'\s+':
-                rows = [line.split() for _, line in zip(range(MAX_ROWS_PER_TABLE + 30), fh)]
+                lines = [line for _, line in zip(range(MAX_ROWS_PER_TABLE + 30), fh)]
+                if any('"' in line for line in lines[:5]):         # R write.table: quoted fields
+                    rows = [[x for x in r if x] for r in csv.reader(lines, delimiter=' ', skipinitialspace=True)]
+                else:
+                    rows = [line.split() for line in lines]
             else:
                 reader = csv.reader(fh, delimiter=sep)
                 rows = [r for _, r in zip(range(MAX_ROWS_PER_TABLE + 30), reader)]
@@ -750,6 +784,9 @@ def read_text_table(path):
     if len(rows) < 2:
         return []
     width = max(len(r) for r in rows)
+    body = rows[1:51]
+    if len(rows[0]) == width - 1 and body and sum(len(r) == width for r in body) >= 0.9 * len(body):
+        rows[0] = ['row_name'] + list(rows[0])          # R write.table: header lacks the row-name column
     raw = pd.DataFrame([[(x.strip() or None) for x in r] + [None] * (width - len(r)) for r in rows])
     df = frame_from_raw(raw)
     return [(os.path.basename(path), df)] if df is not None else []
@@ -929,6 +966,44 @@ def column_values(df, mapping, term):
     return df[cols[0]] if cols else None
 
 
+HIERARCHY_RANKS = ['genus', 'family', 'order', 'class', 'phylum', 'kingdom']
+EPITHET_RE = r'(?:(?:cf|aff|nr)\.\s*)?[a-z][a-z-]+\??'
+
+
+def compose_hierarchy_names(df, mapping):
+    """Tables with a Kingdom ... Genus, Species hierarchy where "Species" holds only the epithet
+    (or is empty for records identified to a higher rank): the name becomes Genus + epithet,
+    else the lowest filled rank."""
+    cols = {t: c for c, t in mapping.items() if t in HIERARCHY_RANKS and c in df.columns}
+    if 'genus' not in cols or len(cols) < 3:
+        return df, mapping
+    sci = next((c for c, t in mapping.items() if t == 'scientificName' and c in df.columns), None)
+
+    def val(v):
+        s = '' if v is None or (isinstance(v, float) and pd.isna(v)) else str(v).strip()
+        return '' if s.lower() in ('nan', 'none', 'na', 'sp', 'sp.', 'spp', 'spp.', '-') else s
+
+    if sci is not None:
+        filled = [val(v) for v in df[sci]]
+        filled = [v for v in filled if v]
+        if filled and sum(bool(re.fullmatch(EPITHET_RE, v)) for v in filled) < 0.5 * len(filled):
+            return df, mapping                         # already full names
+    names = []
+    for _, row in df.iterrows():
+        genus, ep = val(row[cols['genus']]), val(row[sci]) if sci else ''
+        if genus and ep and re.fullmatch(EPITHET_RE, ep):
+            names.append(f'{genus} {ep.rstrip("?")}')
+        else:
+            names.append(next((val(row[cols[r]]) for r in HIERARCHY_RANKS if r in cols and val(row[cols[r]])), ''))
+    if not any(names):
+        return df, mapping
+    df = df.copy()
+    df['__hier_taxon'] = names
+    mapping = {c: t for c, t in mapping.items() if c != sci}
+    mapping['__hier_taxon'] = 'scientificName'
+    return df, mapping
+
+
 def build_from_table(df, mapping, record_id, table_name, context, eml_hint, default_taxon=None):
     """
     Turn one source table into rows for event / occurrence / emof.
@@ -939,6 +1014,7 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
     """
     mapping = {c: t for c, t in mapping.items()
                if not (t in TEXT_TERMS and c in df.columns and looks_numeric(df[c], 0.8))}
+    df, mapping = compose_hierarchy_names(df, mapping)
     layout, value_cols = detect_layout(df, mapping)
     used_default = False
     if layout is None and default_taxon and \
@@ -986,6 +1062,10 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
     rows_event, rows_occ, rows_emof = {}, [], []
 
     date_s, year_s, month_s, day_s = get('eventDate'), get('year'), get('month'), get('day')
+    if date_s is None and year_s is None:                     # "time" column holding date + time
+        t = get('eventTime')
+        if t is not None and t.dropna().astype(str).str.match(r'\s*(?:1[6-9]|20)\d{2}-\d{2}-\d{2}').mean() > 0.8:
+            date_s = t
     lat_s, lon_s = get('decimalLatitude'), get('decimalLongitude')
     lat0_s, lon0_s = get('_latStart'), get('_lonStart')
     dmin_s, dmax_s, depth_s = get('minimumDepthInMeters'), get('maximumDepthInMeters'), get('_depth')
@@ -1979,6 +2059,11 @@ def bbox_temporal(df):
     return bbox, temporal
 
 
+# A table is not converted when fewer than TAXON_TABLE_MIN_MATCH of the distinct names in its
+# taxon column match WoRMS (checked from MIN_NAMES_TAXON_CHECK names on).
+TAXON_TABLE_MIN_MATCH = 0.25
+MIN_NAMES_TAXON_CHECK = 5
+
 REFERENCE_NAME_RE = re.compile(r'code|lookup|look_up|checklist|species.?list|taxa.?list|taxonomy|'
                                r'classification|glossary|dictionary|synonym', re.I)
 
@@ -2001,6 +2086,51 @@ def is_reference_list(name, df, mapping):
         return False
     higher = terms & {'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'vernacularName'}
     return bool(REFERENCE_NAME_RE.search(str(name))) or (len(higher) >= 2 and len(taxa) >= 500)
+
+
+KEY_COL_RE = re.compile(r'^(?=.{4,})[A-Za-z].*?[ _.\-]?(id|code)$', re.I)
+
+
+def join_lookup_tables(tables, max_rounds=3):
+    """Relational datasets (records -> fieldwork -> stations, records -> taxa ...) keep dates,
+    coordinates and names in lookup tables. A lookup table has a key column named "<x>_ID" /
+    "<x> code" with unique values; every other table holding that column with repeated values
+    (a foreign key) receives the lookup's other columns through a left join."""
+    lookups = []
+    for name, df in tables:
+        if df.shape[1] < 2:
+            continue
+        for c in df.columns:
+            if not KEY_COL_RE.match(str(c)) or str(c).strip().lower() in ('id', 'code'):
+                continue
+            v = df[c].dropna().astype(str).str.strip()
+            if len(v) >= 0.9 * len(df) and len(v) and v.is_unique:
+                lookups.append((name, df, c))
+    if not lookups:
+        return tables, []
+    out, notes = [], []
+    for name, df in tables:
+        cur = df
+        for _ in range(max_rounds):
+            added = False
+            for lname, ldf, key in lookups:
+                if lname == name or key not in cur.columns:
+                    continue
+                extra = [c for c in ldf.columns if c not in cur.columns]
+                left = cur[key].astype(str).str.strip()
+                if not extra or left.is_unique:
+                    continue
+                lk = ldf[[key] + extra].copy()
+                lk[key] = lk[key].astype(str).str.strip()
+                if left.isin(set(lk[key])).mean() < 0.5:
+                    continue
+                cur = cur.assign(**{key: left}).merge(lk.drop_duplicates(key), on=key, how='left')
+                notes.append(f'{name}: {len(extra)} columns joined from {lname} through {key}')
+                added = True
+            if not added:
+                break
+        out.append((name, cur))
+    return out, notes
 
 
 def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_dir=None,
@@ -2082,6 +2212,9 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
         res['issues'].append('no readable data tables found')
         return res
 
+    tables, notes = join_lookup_tables(tables)
+    res['issues'] += notes
+
     description = re.sub(r'<[^<]+?>', ' ', meta.get('metadata', {}).get('description', '') or '')
     hint = f'{item.get("Data title", "")} {item.get("Type of data", "")} {description}'
     context = f'{item.get("Taxa covered", "")} {item.get("Data title", "")}'
@@ -2117,6 +2250,14 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
         built = build_from_table(df, m, record_id, name, context, hint, default_taxon)
         if not built:
             continue
+        if not built.get('default_taxon'):
+            names = sorted({o['scientificName'] for o in built['occ']})
+            hits = len(TAXON_VALIDATOR(names)) if len(names) >= MIN_NAMES_TAXON_CHECK else len(names)
+            if hits < TAXON_TABLE_MIN_MATCH * len(names):
+                res['issues'].append(f'{name}: only {hits} of {len(names)} names in the taxon column '
+                                     f'"{next((c for c, t in m.items() if t == "scientificName"), "")}" '
+                                     f'are taxa in WoRMS (metadata / data dictionary table) - skipped')
+                continue
         if built.get('default_taxon'):
             res['issues'].append(f'{name}: no taxon column - scientificName "{default_taxon}" '
                                  f'taken from the dataset title')
