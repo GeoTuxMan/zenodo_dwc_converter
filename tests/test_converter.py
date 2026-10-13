@@ -228,3 +228,6 @@ def test_dataset_terms_edmo_code():
     meta['metadata']['creators'] = [{'name': 'B', 'affiliation': 'National Institute for Marine Research '
                                      'and Development "Grigore Antipa" (NIMRD): Constanta, RO'}]
     assert dc.dataset_terms(meta, '5')['institutionCode'] == '697'
+    for name in ('GeoEcoMar', 'National Institute of Marine Geology and Geoecology'):
+        meta['metadata']['creators'] = [{'name': name, 'affiliation': None}]
+        assert dc.dataset_terms(meta, '5')['institutionCode'] == '850'

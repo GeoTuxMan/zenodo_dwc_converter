@@ -1182,6 +1182,7 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
 # names and affiliations; the code is written to institutionCode, the EDMO URL to institutionID.
 EDMO_CODES = [
     (re.compile(r'\bNIMRD\b|\bINCDM\b|Grigore\s+Antipa', re.I), '697'),
+    (re.compile(r'GeoEcoMar|Marine\s+Geology\s+and\s+Geo-?ecology|Geologie\s+(?:si|şi|și)\s+Geoecologie\s+Marin', re.I), '850'),
 ]
 
 
