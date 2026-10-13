@@ -1,0 +1,6 @@
+{
+  "_comment": "institutionCode set by the data manager for records whose Zenodo metadata does not name the institution; overrides the data and the Zenodo affiliation. EDMO codes: https://edmo.seadatanet.org",
+  "18697857": {"institutionCode": "227", "institutionID": "https://edmo.seadatanet.org/report/227"},
+  "18688776": {"institutionCode": "CAFF"},
+  "15610736": {"institutionCode": "OBIS"}
+}

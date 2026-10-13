@@ -141,9 +141,18 @@ because EMODnetBiocheck treats `datasetName` and `institutionCode` as required:
 |---|---|
 | `datasetName` | Zenodo title |
 | `datasetID` | DOI (`https://doi.org/…`) |
-| `institutionCode` | EDMO code when a creator (name or affiliation) belongs to an institution listed in `EDMO_CODES` — NIMRD "Grigore Antipa" = **697**, GeoEcoMar = **850**; otherwise the affiliation of the first creator that has one - **to be checked by the data manager**; left empty when Zenodo gives no affiliation |
+| `institutionCode` | value of an `institutionCode` column in the data when present; else EDMO code when a creator (name or affiliation) belongs to an institution listed in `EDMO_CODES` — NIMRD "Grigore Antipa" = **697**, GeoEcoMar = **850**, CNR-ISMAR Venice = **227**; otherwise the affiliation of the first creator that has one - **to be checked by the data manager**; left empty when Zenodo gives no affiliation |
 | `institutionID` | `https://edmo.seadatanet.org/report/<EDMO code>` when the EDMO code is known |
 | `license` | Creative Commons licence URL |
+
+`institutions.json` (next to the script) fixes `institutionCode` / `institutionID` for single
+records when neither Zenodo nor the data name the institution; it overrides both:
+
+```json
+{ "18697857": {"institutionCode": "227", "institutionID": "https://edmo.seadatanet.org/report/227"},
+  "18688776": {"institutionCode": "CAFF"},
+  "15610736": {"institutionCode": "OBIS"} }
+```
 
 ### Robustness rules
 * columns mapped to text terms (taxonomy, locality, basisOfRecord…) are dropped when they hold numbers;
@@ -156,7 +165,12 @@ because EMODnetBiocheck treats `datasetName` and `institutionCode` as required:
 * taxon **reference lists** (code lists, checklists, taxonomies: one row per taxon, higher
   classification columns, no coordinates/stations and fewer than 5 numeric columns) are not
   turned into occurrences - e.g. the FAO ASFIS species code list shipped with model scripts.
-  Taxon × sample matrices (ASV tables, abundance matrices) are kept.
+  Taxon × sample matrices (ASV tables, abundance matrices) are kept;
+* rows left **without a date** take the date of the same sample - same station code, coordinates
+  and depth layer in the same table - when that sample has one date (or one date on ≥ 90 % of
+  its rows), otherwise the date of the same station when the station has a single date. The
+  number of rows filled this way is reported in `issues`. Example: 15119469 (GeoEcoMar
+  zooplankton, July 2024 cruise), where the date was typed only on some rows of each sample.
 
 ### Station tables
 If a dataset has a separate station table (station/locality + coordinates, no taxa), events

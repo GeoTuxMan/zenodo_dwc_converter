@@ -128,6 +128,46 @@ def test_wide_sample_columns():
     assert len(built['occ']) == 12
 
 
+def test_missing_date_taken_from_same_sample_or_station():
+    # MA12: undated row of the 0-13 m layer; MA14: the 0-14 m layer has 2 dates (19 vs 1 rows) and
+    # its undated row takes the dominant one; MA20: no layer match, single station date; MA02: none
+    f = ['MA12', 'MA12', 'MA12'] + ['MA14'] * 21 + ['MA20', 'MA20', 'MA02']
+    y = [2024, None, 2024] + [2024] * 20 + [None, 2023, None, None]
+    m = [7, None, 7] + [7] * 20 + [None, 6, None, None]
+    d = [24, None, 24] + [15] * 19 + [24, None, 2, None, None]
+    lat = [43.76] * 3 + [43.80] * 21 + [43.70, 43.70, 43.75]
+    lon = [30.38] * 3 + [30.79] * 21 + [30.10, 30.10, 30.04]
+    dmin = [0, 0, 13] + [0] * 21 + [0, 5, 0]
+    dmax = [13, 13, 47] + [14] * 21 + [10, 20, 15]
+    df = pd.DataFrame({'FieldNumber': f, 'YearCollected': y, 'MonthCollected': m, 'DayCollected': d,
+                       'Latitude': lat, 'Longitude': lon, 'MinimumDepth': dmin, 'MaximumDepth': dmax,
+                       'ScientificName': ['Acartia clausi', 'Oithona davisae'] * 13 + ['Acartia clausi'],
+                       'Abundance (ind/m3)': list(range(1, 28))})
+    built = dc.build_from_table(df, dc.map_columns(list(df.columns)), 'T9', 't', 'Zooplankton', '')
+    ev = {(e['fieldNumber'], e['minimumDepthInMeters']): e['eventDate'] for e in built['events'].values()}
+    assert ev[('MA12', 0)] == '2024-07-24' and ev[('MA14', 0)] in ('2024-07-15', '2024-07-24')
+    assert ev[('MA20', 0)] == '2023-06-02' and ev[('MA02', 0)] == ''
+    assert '' not in [e['eventDate'] for e in built['events'].values() if e['fieldNumber'] != 'MA02']
+    assert built['stats']['filled_dates'] == 3
+
+
+def test_institution_code_from_data():
+    df = pd.DataFrame({'institutionCode': ['CNR-ISMAR-VE'] * 2, 'eventDate': ['2001-05-02'] * 2,
+                       'decimalLatitude': [45.3, 45.3], 'decimalLongitude': [12.5, 12.5],
+                       'scientificName': ['Acartia tonsa', 'Oithona nana']})
+    built = dc.build_from_table(df, dc.map_columns(list(df.columns)), 'T8', 't', 'Zooplankton', '')
+    assert [e['institutionCode'] for e in built['events'].values()] == ['CNR-ISMAR-VE']
+
+
+def test_institution_override(tmp_path):
+    f = tmp_path / 'institutions.json'
+    f.write_text('{"7": {"institutionCode": "227", "institutionID": "https://edmo.seadatanet.org/report/227"}}')
+    df = pd.DataFrame({'id': ['e1'], 'institutionCode': ['CNR-ISMAR-VE']})
+    out = dc.add_dataset_terms(df, {'metadata': {'title': 'x'}}, '7', str(f))
+    assert out.loc[0, 'institutionCode'] == '227' and out.loc[0, 'institutionID'].endswith('/227')
+    assert dc.add_dataset_terms(df, {'metadata': {'title': 'x'}}, '8', str(f)).loc[0, 'institutionCode'] == 'CNR-ISMAR-VE'
+
+
 def test_archive_roundtrip(tmp_path):
     name, df = dc.read_tables(os.path.join(DATA, 'long_sample.csv'), DATA)[0]
     built = dc.build_from_table(df, dc.map_columns(list(df.columns)), 'T1', name, 'Phytoplankton', '')

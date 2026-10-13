@@ -30,6 +30,7 @@ import sys
 import time
 import unicodedata
 import zipfile
+from collections import Counter
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 
@@ -103,6 +104,7 @@ SYNONYMS = {
                   'timestamp', 'date utc', 'start date', 'date start', 'dato'],
     'eventTime': ['eventtime', 'event time', 'time', 'sampling time', 'hour', 'time utc'],
     'fieldNumber': ['fieldnumber', 'field number'],
+    'institutionCode': ['institutioncode', 'institution code'],
     'year': ['year', 'year collected', 'start year collected', 'year of collection', 'yr', 'yyyy', 'an', 'anul', 'anno', 'ano', 'jahr', 'annee', 'sampling year',
              'year sampled', 'survey year', 'year of sampling'],
     'month': ['month', 'month collected', 'start month collected', 'mon', 'mm', 'luna', 'mes', 'monat', 'mois', 'mese', 'sampling month'],
@@ -994,7 +996,7 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
 
     simple_event = ['parentEventID', 'fieldNumber', 'eventTime', 'locationID', 'locality', 'waterBody', 'country',
                     'countryCode', 'habitat', 'coordinateUncertaintyInMeters', 'samplingProtocol',
-                    'sampleSizeValue', 'eventRemarks']
+                    'sampleSizeValue', 'eventRemarks', 'institutionCode']
     simple_occ = ['catalogNumber', 'scientificNameAuthorship', 'taxonRank', 'kingdom', 'phylum',
                   'class', 'order', 'family', 'genus', 'vernacularName', 'identificationQualifier',
                   'organismQuantity', 'organismQuantityType', 'lifeStage', 'sex', 'recordedBy',
@@ -1024,6 +1026,56 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
             return ''
         s = str(v).strip()
         return '' if s.lower() in ('nan', 'none', 'na', 'n/a', 'null', 'nd', '-', '--', '?') else s
+
+    def row_date(i):
+        date = parse_date(date_s.iat[i]) if date_s is not None else None
+        if date is None and year_s is not None:
+            y = to_number(sval(year_s, i))
+            if y and 1600 < y <= dt.date.today().year:
+                date = str(int(y))
+                mo = to_number(sval(month_s, i)) if month_s is not None else None
+                if mo and 1 <= mo <= 12:
+                    date += f'-{int(mo):02d}'
+                    d = to_number(sval(day_s, i)) if day_s is not None else None
+                    if d and 1 <= d <= 31:
+                        try:
+                            date = dt.date(int(y), int(mo), int(d)).isoformat()
+                        except ValueError:
+                            pass
+        return date
+
+    dates = [row_date(i) for i in range(n)]
+    # Rows of a station left without a date (e.g. date typed only on some rows of a sample) take
+    # the date of the same sample - same station code, coordinates and depth layer in the same
+    # table - when that sample has one date (or one date on >= 90 % of its rows), else the date
+    # of the same station when the station has a single date.
+    station_s = ev_series.get('fieldNumber') if ev_series.get('fieldNumber') is not None \
+        else ev_series.get('locationID')
+    if station_s is not None and lat_s is not None and lon_s is not None and None in dates:
+        def station(i):
+            code, la, lo = sval(station_s, i), sval(lat_s, i), sval(lon_s, i)
+            return (code.lower(), la, lo) if code and la and lo else None
+
+        def layer(i):
+            return tuple(sval(s, i) for s in (dmin_s, dmax_s, depth_s))
+        by_sample, by_station = {}, {}
+        for i in range(n):
+            st = station(i)
+            if dates[i] and st:
+                by_sample.setdefault(st + layer(i), Counter())[dates[i]] += 1
+                by_station.setdefault(st, Counter())[dates[i]] += 1
+        for i in range(n):
+            st = station(i) if dates[i] is None else None
+            if not st or (date_s is not None and sval(date_s, i)) or (year_s is not None and sval(year_s, i)):
+                continue
+            c = by_sample.get(st + layer(i))
+            if c and c.most_common(1)[0][1] >= 0.9 * sum(c.values()):
+                dates[i] = c.most_common(1)[0][0]
+            elif not c and len(by_station.get(st, ())) == 1:
+                dates[i] = next(iter(by_station[st]))
+            else:
+                continue
+            stats['filled_dates'] = stats.get('filled_dates', 0) + 1
 
     for i in range(n):
         name, qual, rank_hint = clean_taxon(taxon_raw.iat[i])
@@ -1056,20 +1108,7 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
                 status = 'present'
 
         # event fields
-        date = parse_date(date_s.iat[i]) if date_s is not None else None
-        if date is None and year_s is not None:
-            y = to_number(sval(year_s, i))
-            if y and 1600 < y <= dt.date.today().year:
-                date = str(int(y))
-                mo = to_number(sval(month_s, i)) if month_s is not None else None
-                if mo and 1 <= mo <= 12:
-                    date += f'-{int(mo):02d}'
-                    d = to_number(sval(day_s, i)) if day_s is not None else None
-                    if d and 1 <= d <= 31:
-                        try:
-                            date = dt.date(int(y), int(mo), int(d)).isoformat()
-                        except ValueError:
-                            pass
+        date = dates[i]
         if date is None and ((date_s is not None and sval(date_s, i)) or (year_s is not None and sval(year_s, i))):
             stats['bad_dates'] += 1
         lat = parse_coordinate(sval(lat_s, i), True) if lat_s is not None else None
@@ -1183,7 +1222,22 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
 EDMO_CODES = [
     (re.compile(r'\bNIMRD\b|\bINCDM\b|Grigore\s+Antipa', re.I), '697'),
     (re.compile(r'GeoEcoMar|Marine\s+Geology\s+and\s+Geo-?ecology|Geologie\s+(?:si|şi|și)\s+Geoecologie\s+Marin', re.I), '850'),
+    (re.compile(r'CNR-ISMAR-VE|ISMAR\W.{0,60}(?:Venezia|Venice)', re.I), '227'),
 ]
+
+
+# institutionCode / institutionID fixed per record by the data manager (institutions.json next
+# to this script); these override both the data and the Zenodo metadata.
+INSTITUTIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'institutions.json')
+
+
+def institution_override(record_id, path=None):
+    try:
+        with open(path or INSTITUTIONS_FILE, encoding='utf-8') as fh:
+            v = json.load(fh).get(str(record_id))
+    except (OSError, ValueError):
+        return {}
+    return v if isinstance(v, dict) else {}
 
 
 def edmo_code(text):
@@ -1213,8 +1267,9 @@ def dataset_terms(meta, record_id):
             'license': lic_url or lic_id}
 
 
-def add_dataset_terms(df, meta, record_id):
-    """Fill dataset-level terms in the core table (existing values are kept)."""
+def add_dataset_terms(df, meta, record_id, institutions_file=None):
+    """Fill dataset-level terms in the core table (existing values are kept, except those fixed
+    in institutions.json)."""
     df = df.copy()
     for term, value in dataset_terms(meta, record_id).items():
         if not value:
@@ -1223,6 +1278,8 @@ def add_dataset_terms(df, meta, record_id):
             df[term] = df[term].where(df[term].astype(str).str.strip() != '', value)
         else:
             df[term] = value
+    for term, value in institution_override(record_id, institutions_file).items():
+        df[term] = value
     return df
 
 
@@ -2081,6 +2138,9 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
             res['issues'].append(f'{name}: {st["bad_dates"]} unparseable dates')
         if st['bad_coords']:
             res['issues'].append(f'{name}: {st["bad_coords"]} invalid coordinates')
+        if st.get('filled_dates'):
+            res['issues'].append(f'{name}: {st["filled_dates"]} rows without a date took the date of the '
+                                 f'same sample (station, coordinates, depth) or station')
         for eid, ev in built['events'].items():
             if eid in events:
                 for k, v in ev.items():
