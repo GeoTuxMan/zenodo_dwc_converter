@@ -227,6 +227,42 @@ def test_r_row_names_header(tmp_path):
     assert list(df['year'].astype(str)) == ['2014', '2018'] and list(df['station'].astype(str)) == ['936', '222']
 
 
+def test_wide_table_repeated_event_split_by_sample():
+    df = pd.DataFrame({'Event': ['T0', 'T0', 'T1'], 'Date': ['2021-09-14'] * 3, 'Latitude': [54.1, 54.2, 54.1],
+                       'Longitude': [12.4, 12.5, 12.4], 'Sample ID': ['A1', 'A2', 'B1'],
+                       'Nematoda [#/10 cm**2]': [5, 3, 1], 'Copepoda [#/10 cm**2]': [1, 0, 2],
+                       'Ostracoda [#/10 cm**2]': [0, 1, 1]})
+    m = dc.map_columns(list(df.columns))
+    built = dc.build_from_table(df, m, '1', 't', '', '')
+    assert built is not None
+    assert {o['eventID'] for o in built['occ']} == {'1_T0_A1', '1_T0_A2', '1_T1_B1'}
+
+
+def test_derived_dates_and_coordinates():
+    class FakeGaz:
+        def place(self, name):
+            return [45.3867, 12.3774, 21000, 'Venice Lagoon (Lagoon, Marine Regions MRGID 3611)']                 if name == 'Venice Lagoon' else None
+    events = {'e1': {'eventID': 'e1', 'locality': 'Venice Lagoon'},
+              'e2': {'eventID': 'e2', 'locality': 'North Atlantic', 'eventDate': '2020-05-01'}}
+    meta = {'metadata': {'dates': [{'type': 'collected', 'start': '2024-08-06', 'end': '2024-08-23'}]}}
+    notes = dc.derive_event_gaps(events, meta, FakeGaz())
+    assert events['e1']['eventDate'] == '2024-08-06/2024-08-23' and events['e2']['eventDate'] == '2020-05-01'
+    assert events['e1']['decimalLatitude'] == 45.3867 and events['e1']['coordinateUncertaintyInMeters'] == 21000
+    assert 'derived' in events['e1']['georeferenceRemarks'] and 'decimalLatitude' not in events['e2']
+    assert len(notes) == 2
+
+
+def test_gazetteer_rejects_large_or_ambiguous_places():
+    sea = {'MRGID': 1, 'preferredGazetteerName': 'Kattegat', 'placeType': 'IHO Sea Area', 'latitude': 56.3,
+           'longitude': 11.3, 'minLatitude': 54.6, 'maxLatitude': 58.1, 'minLongitude': 9.4, 'maxLongitude': 13.1}
+    fjord = {'MRGID': 2, 'preferredGazetteerName': 'Rijpfjorden', 'placeType': 'Fjord', 'latitude': 80.08,
+             'longitude': 17.28}
+    other = dict(fjord, MRGID=3, latitude=60.0, longitude=5.0)
+    assert dc.Gazetteer._pick([sea]) is None
+    assert dc.Gazetteer._pick([fjord])[2] == 20000
+    assert dc.Gazetteer._pick([fjord, other]) is None
+
+
 def test_archive_roundtrip(tmp_path):
     name, df = dc.read_tables(os.path.join(DATA, 'long_sample.csv'), DATA)[0]
     built = dc.build_from_table(df, dc.map_columns(list(df.columns)), 'T1', name, 'Phytoplankton', '')

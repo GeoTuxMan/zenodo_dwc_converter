@@ -160,7 +160,11 @@ records when neither Zenodo nor the data name the institution; it overrides both
 * start-of-haul positions (`StartLatitude`…) are used when the main coordinates are empty;
 * taxon authorship is stripped (`Actinoptychus senarius (Ehr.) Ehr.` → `Actinoptychus senarius`);
 * in species-as-columns matrices, headers are accepted as taxa only if WoRMS recognises them;
-* a single Latin name in the Zenodo title is used for single-species tables without a taxon column;
+* a single species in the Zenodo title - Latin name, or a vernacular name resolved by WoRMS
+  (`harbour porpoise` → *Phocoena phocoena*) - is used for tables without a taxon column, but only
+  for tables that record the organism: a tag / individual column (`Ptt`, `Bird_ID`), counts or
+  abundance, or a name saying sighting, record, catch, sample… Noise, vessel, environment, model
+  and raw acoustic-logger tables (CPOD click counts) never become occurrences;
 * identical rows coming from repeated sheets/files are removed, conflicting occurrenceIDs made unique;
 * taxon **reference lists** (code lists, checklists, taxonomies: one row per taxon, higher
   classification columns, no coordinates/stations and fewer than 5 numeric columns) are not
@@ -187,7 +191,22 @@ records when neither Zenodo nor the data name the institution; it overrides both
   date column exists; a time without a year is never read as a date; `20150622` is read as
   2015-06-22;
 * text files written by R `write.table` (header one field shorter than the rows, because of the
-  row names) are realigned, so columns are not shifted by one.
+  row names) are realigned, so columns are not shifted by one; quoted space-separated files are
+  split on the quotes, not on every space;
+* species-as-columns headers may carry a unit (`Acari [#/10 cm**2]`, PANGAEA style);
+* in a species-as-columns table each row is one sample: a repeated event code (campaign `T0`, `T1`)
+  is combined with the sample column so samples are not merged.
+
+### Derived dates and coordinates
+Values missing from the files are taken from outside the data only in two cases, and are always
+labelled:
+* `eventDate` - the *collected* period of the Zenodo record (`2024-08-06/2024-08-23`) for events
+  without a date; `eventRemarks` says *eventDate derived*;
+* coordinates - the centroid of the `locality` / `waterBody` named in the data, from the
+  [Marine Regions](https://www.marineregions.org) gazetteer, only when the place is small enough
+  (radius ≤ 100 km from its bounding box, or a fjord, lagoon, bay, island… without one) and the name
+  is not ambiguous; `coordinateUncertaintyInMeters` holds the radius and `georeferenceRemarks` the
+  place and its MRGID. Sea-basin names (*North Atlantic*, *Kattegat*) are never used.
 
 ### Relational datasets
 Datasets exported from a database keep dates, coordinates and taxon names in lookup tables
@@ -295,21 +314,23 @@ Full run over all 321 open *Included* records of the Task 1 inventory (Black Sea
 datasets whose title/notes mention occurrence, abundance, survey or monitoring); the 22 records
 whose tables were all above 30 MB (106 GB in total) were then processed with `--large-files`,
 and all 321 records were reconverted with `--large-files` after the fixes of 13 October
-(see *Relational datasets* and the taxon-name rules above).
+(see *Relational datasets* and the taxon-name rules above), then again after the hierarchy-name,
+observation-table and derived date/coordinate rules (fewer false occurrences from noise, vessel and
+logger tables; *Derived dates and coordinates* filled 2 datasets with dates and 5 with coordinates).
 
 | Status | Datasets |
 |---|---|
-| Converted | 29 |
-| Partial | 123 |
-| Failed | 169 |
+| Converted | 32 |
+| Partial | 121 |
+| Failed | 168 |
 | Not attempted | 0 |
 
-152 archives written (100 Event core, 52 Occurrence core; 104 long, 48 wide layouts) —
-634,371 events, 5,782,489 occurrences, 2,578,396 eMoF records; mean WoRMS match 88 %
+153 archives written (104 Event core, 49 Occurrence core; 103 long, 50 wide layouts) —
+521,105 events, 5,326,879 occurrences, 2,575,203 eMoF records; mean WoRMS match 88 %
 (76 % before the fixes, which removed metadata sheets and data dictionaries read as taxa). All
 archives pass the structural check. Most *Partial* datasets lack coordinates and/or dates in
 the files themselves (typical of experiment / supplementary-material uploads). Of the *Failed*
-ones, 142 hold no taxon-level data (traits, genetics, effort tables, model output, acoustic or
+ones, 141 hold no taxon-level data (traits, genetics, effort tables, model output, acoustic or
 satellite products, species codes without a lookup table) and 27 have no readable table (images, audio, rasters, scripts).
 
 Large-file pass: 22 records, 106 GB on Zenodo, about 0.4 GB actually transferred - 1 Converted

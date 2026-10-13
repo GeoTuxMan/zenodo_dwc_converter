@@ -4,7 +4,7 @@ Zenodo -> Darwin Core Archive converter (Zenodo Inventory project, Task 3).
 Takes the marine biology datasets discovered on Zenodo (Task 1, data.json), downloads their
 tabular files, maps the columns to Darwin Core terms and writes one Darwin Core Archive per
 dataset (Event core + Occurrence + ExtendedMeasurementOrFact, or Occurrence core when the data
-have no sampling events), ready for the EMODnet Biology / EurOBIS IPT.
+have no sampling events), following the EMODnet Biology data standards.
 
 Pipeline per dataset:
   1. Zenodo API metadata + file list; download tabular files to a shared cache.
@@ -24,6 +24,7 @@ import hashlib
 import io
 import json
 import os
+import math
 import re
 import shutil
 import sys
@@ -44,6 +45,7 @@ TOOL = f'zenodo_dwc_converter v{__version__}'
 
 ZENODO_API = 'https://zenodo.org/api/records'
 WORMS_MATCH = 'https://www.marinespecies.org/rest/AphiaRecordsByMatchNames'
+WORMS_VERNACULAR = 'https://www.marinespecies.org/rest/AphiaRecordsByVernacular/{}'
 
 TABULAR_EXT = {'.csv', '.tsv', '.txt', '.tab', '.xlsx', '.xls', '.xlsm', '.ods', '.zip'}
 MAX_FILE_MB = 30
@@ -160,7 +162,7 @@ SYNONYMS = {
                         'area sampled', 'sampled area', 'surface sampled'],
     'scientificName': ['scientificname', 'scientific name', 'scientific name accepted',
                        'scientific name valid', 'valid scientific name', 'accepted scientific name',
-                       'species', 'species name',
+                       'species', 'species name', 'name size', 'name/size',
                        'speciesname', 'taxon', 'taxa', 'taxon name', 'taxonname', 'taxa name', 'taxaname',
                        'specie', 'specia', 'specii', 'organism', 'organism name', 'valid name',
                        'validname', 'accepted name', 'acceptedname', 'latin name', 'latinname',
@@ -215,8 +217,8 @@ SYNONYMS = {
 EVENT_TERMS = ['eventID', 'parentEventID', 'fieldNumber', 'eventDate', 'eventTime', 'year', 'month', 'day',
                'locationID', 'locality', 'waterBody', 'country', 'countryCode',
                'decimalLatitude', 'decimalLongitude', 'geodeticDatum',
-               'coordinateUncertaintyInMeters', 'minimumDepthInMeters', 'maximumDepthInMeters',
-               'habitat', 'samplingProtocol', 'sampleSizeValue', 'sampleSizeUnit',
+               'coordinateUncertaintyInMeters', 'georeferenceRemarks', 'minimumDepthInMeters',
+               'maximumDepthInMeters', 'habitat', 'samplingProtocol', 'sampleSizeValue', 'sampleSizeUnit',
                'eventRemarks', 'datasetName', 'datasetID', 'institutionCode', 'institutionID', 'license']
 OCC_TERMS = ['occurrenceID', 'eventID', 'basisOfRecord', 'occurrenceStatus', 'catalogNumber',
              'scientificName', 'scientificNameID', 'scientificNameAuthorship', 'taxonRank',
@@ -281,6 +283,8 @@ ABIOTIC_KEYWORDS = [
 NON_TAXON_RE = re.compile(
     r'^(total|totals|sum|suma|grand total|nan|none|null|n/?a|na|-+|\?+|unknown|other|others|'
     r'varia|unidentified|no data|nd|empty|blank|mean|average|sd|std|min|max)$', re.I)
+# trailing unit of a PANGAEA-style header: "Acari [#/10 cm**2]", "Nematoda (ind/10cm2)"
+UNIT_SUFFIX_RE = re.compile(r'\s*[\[(][^\])]*[\])]\s*$')
 LATIN_COL_RE = re.compile(
     r'^[A-Z][a-z]{2,}(?:[ _.][a-z]{3,}| (?:sp|spp|cf|aff)\.?(?: [a-z]{3,})?)?(?:[ _.][a-z]{3,})?$')
 
@@ -318,7 +322,7 @@ def _syn_index():
 NOT_TAXON_HEADER_RE = re.compile(r'\b(country|city|town|station|site|location|locality|place|region|'
                                  r'project|file|ship|vessel|cruise|person|coordinator|author|collector|'
                                  r'observer|recorder|institution|dataset|field|column|variable|parameter|'
-                                 r'sheet|habitat|gear|method|common|vernacular|local|dive)\b|ship$', re.I)
+                                 r'sheet|habitat|gear|method|common|vernacular|local|dive|vi|index|indices)\b|ship$', re.I)
 
 
 def map_columns(columns, override=None):
@@ -917,6 +921,26 @@ class Worms:
             self.save()
         return {n: self.cache.get(n) for n in names}
 
+    def vernacular(self, name):
+        """Scientific name for an exact vernacular name ("harbour porpoise"), only when WoRMS gives
+        a single accepted species."""
+        key = 'vernacular:' + name.lower()
+        if key not in self.cache:
+            sci = None
+            try:
+                r = self.session.get(WORMS_VERNACULAR.format(requests.utils.quote(name)),
+                                     params={'like': 'false'}, timeout=60)
+                hits = r.json() if r.status_code == 200 else []
+                spp = {(h.get('valid_name') or h.get('scientificname')) for h in hits
+                       if str(h.get('rank', '')).lower() == 'species'}
+                sci = spp.pop() if len(spp) == 1 else None
+            except Exception:
+                return None
+            self.cache[key] = sci
+            self.save()
+            time.sleep(0.3)
+        return self.cache[key]
+
 
 # ---------------------------------------------------------------------------
 # Building DwC tables from one source table
@@ -938,7 +962,7 @@ def detect_layout(df, mapping):
     unmapped = [c for c in df.columns if c not in mapping]
     has_taxon = 'scientificName' in mapping.values()
     if not has_taxon:
-        latin = [c for c in unmapped if LATIN_COL_RE.match(str(c).strip())
+        latin = [c for c in unmapped if LATIN_COL_RE.match(UNIT_SUFFIX_RE.sub('', str(c)).strip())
                  and not measurement_kind(c) and not abiotic_kind(c)]
         latin_num = [c for c in latin if looks_numeric(df[c], 0.5)]
         if TAXON_VALIDATOR and latin_num:
@@ -1004,6 +1028,43 @@ def compose_hierarchy_names(df, mapping):
     return df, mapping
 
 
+# tables that record the organism itself (sightings, catches, tags, samples, counts)
+OBSERVATION_RE = re.compile(r'sighting|observ|record|encounter|strand|presence|detect|captur|catch|'
+                            r'tag|track|gps|gls|argos|specimen|individual|nest|colony|count|abundance|'
+                            r'biomass|density|cover|sample|genotyp|microsat|haplotyp|age|length|weight|'
+                            r'size|morpho|bycatch|survey|occurrence|number', re.I)
+# columns identifying a tagged / followed individual: "Ptt", "Bird_ID", "tag id", "whale"
+TAG_COL_RE = re.compile(r'^(ptt|ptt.?id|tag|tag.?id|tag.?no|deploy\w*.?id|(bird|animal|individual|ind|'
+                        r'whale|seal|shark|turtle|fish|dolphin|porpoise).?(id|no|code))$', re.I)
+# tables about the environment, the platform or the analysis, not the organism
+NON_OBSERVATION_RE = re.compile(r'noise|\bspl\b|sound|playback|seismic|vessel|ship|boat|helicopter|'
+                                r'aircraft|jet|transport|sediment|\bctd\b|temperature|salinity|weather|'
+                                r'wind|environment|covariate|effort|diel|activity.?log|resample|summary|'
+                                r'model|simulat|smhi|ices_data|reflectance|spectr|click|cpod|fpod|pod600', re.I)
+
+
+def observation_table(table_name, df, mapping):
+    """A table without a taxon column receives the single species of the dataset title only when
+    it records that organism: counts / abundance columns, or a name saying sighting, record,
+    catch, tag, sample ... and never noise, vessel, environment or model tables."""
+    name = re.sub(r'\.(csv|txt|tsv|xlsx?|ods)$', '', str(table_name).split('/')[-1], flags=re.I)
+    if any(TAG_COL_RE.match(str(c).strip()) for c in df.columns):
+        return True                                    # positions of tagged / identified animals
+    if NON_OBSERVATION_RE.search(name):
+        return False
+    if any(str(c).strip().lower() in ('id', 'sample', 'sample id', 'sample_id') for c in df.columns):
+        return True
+    terms = set(mapping.values())
+    if terms & {'individualCount', 'organismQuantity', 'occurrenceStatus', 'lifeStage', 'sex'}:
+        return True
+    if any(measurement_kind(c) in ('abundance', 'biomass', 'density', 'count', 'cover')
+           for c in df.columns if c not in mapping):
+        return True
+    return bool(OBSERVATION_RE.search(name)) or \
+        any(OBSERVATION_RE.search(str(c)) for c in df.columns if c not in mapping)
+
+
+
 def build_from_table(df, mapping, record_id, table_name, context, eml_hint, default_taxon=None):
     """
     Turn one source table into rows for event / occurrence / emof.
@@ -1018,7 +1079,8 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
     layout, value_cols = detect_layout(df, mapping)
     used_default = False
     if layout is None and default_taxon and \
-            set(mapping.values()) & {'eventDate', 'year', 'decimalLatitude'}:
+            set(mapping.values()) & {'eventDate', 'year', 'decimalLatitude'} and \
+            observation_table(table_name, df, mapping):
         df = df.copy()
         df['__taxon'] = default_taxon
         mapping = dict(mapping)
@@ -1033,6 +1095,17 @@ def build_from_table(df, mapping, record_id, table_name, context, eml_hint, defa
 
     # --- reshape wide -> long -------------------------------------------------
     if layout == 'wide_species_cols':
+        # one row = one sample: a repeated eventID (campaign "T0", "T1") would merge the samples
+        ev_col = next((c for c, t in mapping.items() if t == 'eventID' and c in df.columns), None)
+        if ev_col is not None and df[ev_col].dropna().duplicated().any():
+            sample_col = next((c for c in df.columns if c != ev_col and c not in value_cols and
+                               re.search(r'sample|replicate|core|station', str(c), re.I) and
+                               not df[c].isna().all() and
+                               not df[[ev_col, c]].astype(str).duplicated().any()), None)
+            df = df.copy()
+            suffix = df[sample_col].astype(str) if sample_col else pd.Series(
+                [str(i + 1) for i in range(len(df))], index=df.index)
+            df[ev_col] = df[ev_col].astype(str) + '_' + suffix
         id_cols = [c for c in df.columns if c not in value_cols]
         long = df.melt(id_vars=id_cols, value_vars=value_cols, var_name='__taxon',
                        value_name='__value')
@@ -2037,8 +2110,42 @@ def title_taxon(meta, worms):
         return None
     hits = [(c, m) for c, m in worms.match(cands).items()
             if m and m.get('match_type') == 'exact'
-            and str(m.get('rank', '')).lower() in ('species', 'subspecies')]
-    return hits[0][0] if len(hits) == 1 else None
+            and str(m.get('rank', '')).lower() in ('species', 'subspecies')] if cands else []
+    if hits:
+        return hits[0][0] if len(hits) == 1 else None
+    return vernacular_title_taxon(md.get('title', ''), worms)
+
+
+# animal / plant nouns that end a vernacular name in a title ("harbour porpoise", "basking sharks")
+VERNACULAR_HEAD_RE = re.compile(
+    r'(porpoise|seal|whale|dolphin|shark|guillemot|puffin|razorbill|kittiwake|gull|tern|cormorant|'
+    r'eider|turtle|cod|herring|sprat|salmon|eel|plaice|flounder|mackerel|oyster|mussel|crab|lobster|'
+    r'sturgeon|pike|turbot|anchovy|sardine|seagrass|kelp|eelgrass|goby|walrus|otter)(e?s)?$', re.I)
+
+
+def vernacular_title_taxon(title, worms):
+    """Single-species datasets named by a vernacular name in the title, resolved through WoRMS."""
+    words = re.findall(r"[A-Za-z'-]+", title or '')
+    found = set()
+    for i, w in enumerate(words):
+        m = VERNACULAR_HEAD_RE.fullmatch(w)
+        if not m or i == 0:
+            continue
+        head = m.group(1).lower()
+        for n in (2, 3):                                  # "harbour porpoise", "northern bottlenose whale"
+            if i - n + 1 < 0:
+                continue
+            phrase = ' '.join(x.lower() for x in words[i - n + 1:i]) + ' ' + head
+            sci = worms.vernacular(phrase)
+            if sci:
+                found.add(sci)
+                break
+    if len(found) == 1:
+        return found.pop()
+    if not found:
+        return None
+    # several matches: the longest phrase usually wins ("northern bottlenose whale" over "bottlenose whale")
+    return None
 
 
 def bbox_temporal(df):
@@ -2131,6 +2238,135 @@ def join_lookup_tables(tables, max_rounds=3):
                 break
         out.append((name, cur))
     return out, notes
+
+
+MR_GAZETTEER = 'https://www.marineregions.org/rest/getGazetteerRecordsByName.json/{}/'
+# a place centroid is used for coordinates only when the place is small enough
+MAX_DERIVED_UNCERTAINTY_M = 100000
+# uncertainty given to place types that have no bounding box in Marine Regions
+POINT_PLACE_UNCERTAINTY_M = {'fjord': 20000, 'lagoon': 10000, 'bay': 10000, 'estuary': 10000,
+                             'harbour': 5000, 'beach': 2000, 'island': 10000, 'islet': 2000,
+                             'cape': 5000, 'point': 5000, 'reef': 5000, 'sound': 10000,
+                             'strait': 20000, 'inlet': 10000, 'cove': 2000, 'seamount': 20000}
+
+
+ADMIN_PLACE_RE = re.compile(r'ward|municipal|county|province|district|region|country|nation|state|eez|'
+                            r'territor|commune|parish|authority|dependency', re.I)
+
+
+class Gazetteer:
+    """Marine Regions place names -> centroid and uncertainty (cached)."""
+    _shared = None
+
+    @classmethod
+    def shared(cls, cache_dir, session):
+        if cls._shared is None:
+            cls._shared = cls(os.path.join(cache_dir, '_gazetteer_cache.json'), session)
+        return cls._shared
+
+    def __init__(self, cache_file, session):
+        self.cache_file, self.session = cache_file, session
+        try:
+            with open(cache_file, encoding='utf-8') as fh:
+                self.cache = json.load(fh)
+        except Exception:
+            self.cache = {}
+
+    def place(self, name):
+        """(lat, lon, uncertainty_m, label) or None."""
+        key = name.strip().lower()
+        if key not in self.cache:
+            hit = None
+            try:
+                r = self.session.get(MR_GAZETTEER.format(requests.utils.quote(name.strip())),
+                                     params={'like': 'false', 'fuzzy': 'false'}, timeout=60)
+                recs = [x for x in (r.json() if r.status_code == 200 else [])
+                        if x.get('status') == 'standard' and x.get('latitude') is not None]
+                hit = self._pick(recs)
+            except Exception:
+                return None
+            self.cache[key] = hit
+            tmp = f'{self.cache_file}.{os.getpid()}.part'
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(self.cache, fh)
+            os.replace(tmp, self.cache_file)
+            time.sleep(0.3)
+        return self.cache[key]
+
+    @staticmethod
+    def _pick(recs):
+        cands = []
+        for x in recs:
+            if ADMIN_PLACE_RE.search(str(x.get('placeType', ''))):
+                continue                                   # wards, counties, EEZs: not a sampling place
+            lat, lon = float(x['latitude']), float(x['longitude'])
+            if x.get('minLatitude') is not None and x.get('maxLongitude') is not None:
+                dlat = (float(x['maxLatitude']) - float(x['minLatitude'])) * 111320 / 2
+                dlon = (float(x['maxLongitude']) - float(x['minLongitude'])) * 111320 / 2 * \
+                    max(0.05, math.cos(math.radians(lat)))
+                unc = math.hypot(dlat, dlon)
+            else:
+                ptype = str(x.get('placeType', '')).lower()
+                unc = next((v for k, v in POINT_PLACE_UNCERTAINTY_M.items() if k in ptype), None)
+            if unc is not None and unc <= MAX_DERIVED_UNCERTAINTY_M:
+                cands.append((round(lat, 5), round(lon, 5), int(max(unc, 1000)),
+                              f'{x["preferredGazetteerName"]} ({x.get("placeType", "")}, Marine Regions '
+                              f'MRGID {x["MRGID"]})'))
+        # the same name for distant places (e.g. two islands) is ambiguous
+        if len({(round(c[0]), round(c[1])) for c in cands}) == 1:
+            return list(cands[0])
+        return None
+
+
+# names that are places somewhere but mean something else in a data column
+GENERIC_PLACE_RE = re.compile(r'(?i)(the\s+)?(central|mainland|north|south|east|west|inner|outer|'
+                              r'middle|upper|lower|coast|coastal|offshore|inshore|bay|island|sea|site|'
+                              r'area|station|control|reference|impact|lagoon|harbour|port|reef|beach)'
+                              r'(\s+(\d+|[a-z]))?')
+
+
+def derive_event_gaps(events, meta, gazetteer):
+    """Fill eventDate / coordinates that are not in the data with values derived from the Zenodo
+    record and the Marine Regions gazetteer. Every derived value is labelled in eventRemarks /
+    georeferenceRemarks and counted in the issues."""
+    notes = []
+    md = meta.get('metadata', {})
+    coll = next((d for d in md.get('dates', []) or [] if d.get('type') == 'collected'
+                 and (d.get('start') or d.get('end'))), None)
+    if coll:
+        period = '/'.join(dict.fromkeys(x for x in (coll.get('start'), coll.get('end')) if x))
+        n = 0
+        for ev in events.values():
+            if not str(ev.get('eventDate', '')).strip():
+                ev['eventDate'] = period
+                ev['eventRemarks'] = '; '.join(x for x in (ev.get('eventRemarks', ''),
+                                               'eventDate derived: collection period of the Zenodo record') if x)
+                n += 1
+        if n:
+            notes.append(f'eventDate of {n} events derived from the collection period of the Zenodo '
+                         f'record ({period})')
+    n, places = 0, set()
+    for ev in events.values():
+        if str(ev.get('decimalLatitude', '')).strip():
+            continue
+        for term in ('locality', 'waterBody'):
+            name = str(ev.get(term, '') or '').strip()
+            if len(name) < 3 or re.fullmatch(r'[\W\d_]+', name) or GENERIC_PLACE_RE.fullmatch(name) or \
+                    re.search(r'[/\\?#%;]', name):
+                continue
+            hit = gazetteer.place(name) if gazetteer else None
+            if hit:
+                lat, lon, unc, label = hit
+                ev['decimalLatitude'], ev['decimalLongitude'] = lat, lon
+                ev['coordinateUncertaintyInMeters'] = unc
+                ev['georeferenceRemarks'] = f'coordinates derived: centroid of {label}'
+                n += 1
+                places.add(label.split(' (')[0])
+                break
+    if n:
+        notes.append(f'coordinates of {n} events derived from the place name (Marine Regions centroid, '
+                     f'uncertainty kept): {", ".join(sorted(places)[:5])}')
+    return notes
 
 
 def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_dir=None,
@@ -2311,6 +2547,8 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
                     filled += 1
         if filled:
             res['issues'].append(f'coordinates of {filled} events taken from a station table')
+
+    res['issues'] += derive_event_gaps(events, meta, Gazetteer.shared(cache_dir, session))
 
     res['layout'] = 'wide' if 'wide' in layouts else 'long'
     ev_df = tidy_frame(list(events.values()), EVENT_TERMS, 'eventID')
