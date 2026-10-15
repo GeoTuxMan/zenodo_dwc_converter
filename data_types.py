@@ -402,6 +402,8 @@ def json_tables(doc, max_rows=MAX_NC_TABLE_ROWS):
         if v['role'] == 'data' and 'data' in v:
             groups.setdefault(tuple(v['dimensions']), []).append(name)
     tables, skipped = [], []
+    if len(groups) > 1:
+        groups.pop((), None)                             # scalar variables: in the JSON only
     for dims, names in sorted(groups.items(), key=lambda kv: -len(kv[1])):
         n = int(np.prod([doc['dimensions'][d] for d in dims])) if dims else 1
         label = '_'.join(dims) or 'scalars'

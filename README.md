@@ -446,6 +446,16 @@ Zenodo was intermittently unavailable (HTTP 504) during the run; the tool opens 
 breaker after three server errors and retries the skipped datasets in extra passes
 (`--retry-passes`, `--retry-wait`).
 
+**Other data types** (`data_types.py`, 15 October 2026): 97,780 files in the 321 records (zip
+members included), classified into 16 types. Most are images / video (67,250), GIS rasters and
+model output (8,374), documentation / code (6,368), acoustic recordings (5,440) and R / MATLAB
+binaries (3,642). 2,536 tables were exported as standardised CSV + XLSX (or JSON + CSV + XLSX for
+NetCDF): 1,848 chemistry / biogeochemistry (1,748 of them weekly satellite NetCDF products of
+1402033), 232 physical oceanography, 155 traits, 133 biological measurements without a taxon
+column, 84 tracking, 27 acoustic, 26 GIS / model, 15 other, 10 sediment, 4 fisheries and 2
+bathymetry tables. Files over 30 MB and NetCDF inside multi-GB zip archives (9,121 NetCDF in total,
+165 GB) are listed, not converted.
+
 ## 10. Known limitations
 
 * Heuristic mapping: unusual headers or multi-row headers may need an override.
