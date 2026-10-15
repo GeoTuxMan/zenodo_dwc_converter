@@ -5,3 +5,8 @@ xlrd
 odfpy
 pyyaml
 pytest
+xlsxwriter
+lxml
+PyMuPDF        # paper_sources.py: text of open-access PDFs
+xarray         # data_types.py: NetCDF files (optional)
+netCDF4

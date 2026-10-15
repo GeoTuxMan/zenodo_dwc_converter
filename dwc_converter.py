@@ -2325,11 +2325,25 @@ GENERIC_PLACE_RE = re.compile(r'(?i)(the\s+)?(central|mainland|north|south|east|
                               r'(\s+(\d+|[a-z]))?')
 
 
-def derive_event_gaps(events, meta, gazetteer):
+def norm_station(s):
+    """Station / site label reduced for matching ('St. 05' == 'st5' == 'Station 5')."""
+    s = re.sub(r'(?i)^(station|stn|st|site|location|loc)\.?\s*', '', str(s).strip())
+    s = re.sub(r'[\s_\-.]+', '', s.lower())
+    return re.sub(r'(?<![0-9])0+(?=\d)', '', s)
+
+
+def _add_remark(ev, term, text):
+    ev[term] = '; '.join(x for x in (ev.get(term, ''), text) if x)
+
+
+def derive_event_gaps(events, meta, gazetteer, paper=None):
     """Fill eventDate / coordinates that are not in the data with values derived from the Zenodo
-    record and the Marine Regions gazetteer. Every derived value is labelled in eventRemarks /
-    georeferenceRemarks and counted in the issues."""
+    record, the paper linked to it (paper_values.json, written by paper_sources.py) and the Marine
+    Regions gazetteer. Every derived value is labelled in eventRemarks / georeferenceRemarks and
+    counted in the issues."""
     notes = []
+    paper = paper or {}
+    doi = paper.get('paper_doi', '')
     md = meta.get('metadata', {})
     coll = next((d for d in md.get('dates', []) or [] if d.get('type') == 'collected'
                  and (d.get('start') or d.get('end'))), None)
@@ -2345,6 +2359,31 @@ def derive_event_gaps(events, meta, gazetteer):
         if n:
             notes.append(f'eventDate of {n} events derived from the collection period of the Zenodo '
                          f'record ({period})')
+    if paper.get('eventDate') and paper.get('date_apply'):
+        n = 0
+        for ev in events.values():
+            if not str(ev.get('eventDate', '')).strip():
+                ev['eventDate'] = paper['eventDate']
+                _add_remark(ev, 'eventRemarks', f'eventDate derived: sampling period stated in doi:{doi}')
+                n += 1
+        if n:
+            notes.append(f'eventDate of {n} events derived from the sampling period stated in the paper '
+                         f'doi:{doi} ({paper["eventDate"]})')
+    stations = paper.get('stations') or {}
+    if stations:
+        n = 0
+        for ev in events.values():
+            if str(ev.get('decimalLatitude', '')).strip():
+                continue
+            for term in ('locationID', 'locality', 'fieldNumber'):
+                hit = stations.get(norm_station(ev.get(term, ''))) if str(ev.get(term, '')).strip() else None
+                if hit:
+                    ev['decimalLatitude'], ev['decimalLongitude'] = hit[1], hit[2]
+                    ev['georeferenceRemarks'] = f'coordinates of station {hit[0]} from the station table of doi:{doi}'
+                    n += 1
+                    break
+        if n:
+            notes.append(f'coordinates of {n} events taken from the station table of the paper doi:{doi}')
     n, places = 0, set()
     for ev in events.values():
         if str(ev.get('decimalLatitude', '')).strip():
@@ -2366,11 +2405,24 @@ def derive_event_gaps(events, meta, gazetteer):
     if n:
         notes.append(f'coordinates of {n} events derived from the place name (Marine Regions centroid, '
                      f'uncertainty kept): {", ".join(sorted(places)[:5])}')
+    area = paper.get('area') or {}
+    if area and paper.get('area_apply'):
+        n = 0
+        for ev in events.values():
+            if not str(ev.get('decimalLatitude', '')).strip():
+                ev['decimalLatitude'], ev['decimalLongitude'] = area['lat'], area['lon']
+                ev['coordinateUncertaintyInMeters'] = area['uncertainty_m']
+                ev['georeferenceRemarks'] = (f'coordinates derived: centre of the study area given in doi:{doi} '
+                                             f'({area.get("n_points", 1)} coordinate pairs in the Methods)')
+                n += 1
+        if n:
+            notes.append(f'coordinates of {n} events derived from the study area of the paper doi:{doi} '
+                         f'(uncertainty {area["uncertainty_m"]} m)')
     return notes
 
 
 def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_dir=None,
-                    large_files=False):
+                    large_files=False, paper_values=None):
     record_id = record_id_of(item)
     res = new_result(item, record_id)
     if str(item.get('Access conditions', '')).lower() != 'open':
@@ -2548,7 +2600,8 @@ def convert_dataset(item, session, worms, cache_dir, out_dir, token='', mapping_
         if filled:
             res['issues'].append(f'coordinates of {filled} events taken from a station table')
 
-    res['issues'] += derive_event_gaps(events, meta, Gazetteer.shared(cache_dir, session))
+    res['issues'] += derive_event_gaps(events, meta, Gazetteer.shared(cache_dir, session),
+                                       (paper_values or {}).get(record_id))
 
     res['layout'] = 'wide' if 'wide' in layouts else 'long'
     ev_df = tidy_frame(list(events.values()), EVENT_TERMS, 'eventID')
@@ -2728,6 +2781,8 @@ def main(argv=None):
     ap.add_argument('--merge', action='store_true',
                     help='update the existing conversion_results.json in --out instead of replacing it '
                          '(for re-runs of a subset with --ids)')
+    ap.add_argument('--paper-values', help='paper_values.json written by paper_sources.py '
+                                           '(default: <out>/paper_values.json when present)')
     ap.add_argument('--large-files', action='store_true',
                     help=f'also process files > {MAX_FILE_MB} MB: zips are read remotely (HTTP Range, '
                          f'tables only), text tables from their first {LARGE_TEXT_HEAD_MB} MB')
@@ -2742,6 +2797,11 @@ def main(argv=None):
     os.makedirs(args.cache, exist_ok=True)
     os.makedirs(os.path.join(args.out, 'dwca'), exist_ok=True)
     session = robust_session()
+    paper_values = {}
+    pv_path = args.paper_values or os.path.join(args.out, 'paper_values.json')
+    if os.path.exists(pv_path):
+        with open(pv_path, encoding='utf-8') as fh:
+            paper_values = json.load(fh)
     worms = Worms(os.path.join(args.cache, '_worms_cache.json'), session)
     results = {}
     previous = {}
@@ -2769,7 +2829,7 @@ def main(argv=None):
             t0 = time.time()
             try:
                 res = convert_dataset(item, session, worms, args.cache, args.out, token, args.mapping_dir,
-                                      args.large_files)
+                                      args.large_files, paper_values)
             except Exception as e:
                 res = new_result(item, rid)
                 res['status'] = STATUS_FAILED

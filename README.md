@@ -198,15 +198,49 @@ records when neither Zenodo nor the data name the institution; it overrides both
   is combined with the sample column so samples are not merged.
 
 ### Derived dates and coordinates
-Values missing from the files are taken from outside the data only in two cases, and are always
-labelled:
+Values missing from the files are taken from outside the data only in the cases below, and are
+always labelled:
 * `eventDate` - the *collected* period of the Zenodo record (`2024-08-06/2024-08-23`) for events
   without a date; `eventRemarks` says *eventDate derived*;
 * coordinates - the centroid of the `locality` / `waterBody` named in the data, from the
   [Marine Regions](https://www.marineregions.org) gazetteer, only when the place is small enough
   (radius ≤ 100 km from its bounding box, or a fjord, lagoon, bay, island… without one) and the name
   is not ambiguous; `coordinateUncertaintyInMeters` holds the radius and `georeferenceRemarks` the
-  place and its MRGID. Sea-basin names (*North Atlantic*, *Kattegat*) are never used.
+  place and its MRGID. Sea-basin names (*North Atlantic*, *Kattegat*) are never used;
+* values stated in the **paper linked to the record** (`paper_sources.py`, below): station
+  coordinates matched by station code, the sampling period, and the centre of the study area.
+
+### Dates and coordinates from the linked papers (`paper_sources.py`)
+Most uploads are the data behind a paper ("Data from: …"); the sampling period and the station
+positions are written in its Methods. `paper_sources.py`, run before the converter,
+
+1. takes the DOIs of the record's related identifiers and description, keeps scholarly works only
+   (OpenAlex type *article*, *review*, *preprint*…; data-repository DOIs are skipped);
+2. reads an open-access full text: Europe PMC XML, otherwise the open-access PDF found by OpenAlex
+   (directly or through the `citation_pdf_url` of a repository landing page - HAL, DSpace…);
+   closed papers are reported and skipped;
+3. in the Methods / Study area text extracts
+   * **station tables** (station + latitude + longitude columns, or station rows of a PDF table),
+   * **every coordinate pair** (DMS, decimal minutes, decimal degrees with hemisphere) → centre of
+     the study area; the radius is the half-diagonal of their bounding box plus the precision of the
+     coordinates as written (whole minutes ≈ 1.3 km, whole degrees ≈ 79 km),
+   * the **sampling period** from the sentences about sampling / collection / surveys (author-year
+     citations, measurements such as *2000 µm*, page headers and years from the publication year on
+     are ignored);
+4. writes `output/paper_values.json` and `output/Paper_Values_Review.xlsx` (one row per record:
+   paper, source, values, evidence sentences, apply flags).
+
+A value is applied (`date_apply` / `area_apply` = true) only when the period spans ≤ 10 years, the
+study area has a radius ≤ 100 km and its centre lies in a region declared for the record in the
+inventory; set the flag to `false` in `paper_values.json` to reject a value, then re-run the
+converter. In the archive: `eventRemarks` = *eventDate derived: sampling period stated in doi:…*,
+`georeferenceRemarks` = *coordinates derived: centre of the study area given in doi:…* (with
+`coordinateUncertaintyInMeters`) or *coordinates of station … from the station table of doi:…*.
+
+```bash
+python paper_sources.py                    # all records with an archive (cached in zenodo_cache/_papers)
+python dwc_converter.py --ids … --merge    # reads output/paper_values.json
+```
 
 ### Relational datasets
 Datasets exported from a database keep dates, coordinates and taxon names in lookup tables
@@ -291,6 +325,57 @@ values map source columns to DwC terms (`_depth` = single depth column):
 }
 ```
 
+## 7b. Other data types (`data_types.py`)
+The same records also hold chemistry, physical oceanography, bathymetry, sediment, tracking,
+acoustic, genetic and other data. `data_types.py` lists **every file** of the records processed by
+the converter (members of zip archives included - read remotely when the zip is not cached),
+classifies it into a data type and saves every non-biological table as **CSV (UTF-8) and XLSX**:
+
+| Data type | Recognised by |
+|---|---|
+| Biological occurrences / abundance | taxon column or species matrix (→ Darwin Core Archive) |
+| Biological measurements without taxon column | biomass, abundance, density, CPUE … of groups (no species names) |
+| Traits / morphometrics / diet | length, weight, age, diet, stomach, reproduction … |
+| Chemistry / biogeochemistry | nutrients, oxygen, carbonate system, pigments, metals, contaminants, isotopes |
+| Physical oceanography / meteorology | CTD, temperature, salinity, currents, waves, light, turbidity, `.cnv` |
+| Bathymetry / topography | bathymetry, multibeam, DEM, `.xyz` / `.asc` / bathymetric rasters |
+| Sediment / geology | grain size, mud / sand / gravel, organic matter, cores |
+| Tracking / telemetry | GPS, Argos, PTT, tags, dives, `.gpx` / `.kml` |
+| Acoustic | hydrophones, C-POD / F-POD, clicks, noise / SPL, `.wav` |
+| Genetic / eDNA / sequences | `.fastq`, `.fasta`, `.vcf`, trees, OTU / ASV tables |
+| Imagery / video, GIS / rasters / model output, R / MATLAB binaries, documentation / code | file extension |
+
+The type of a table comes from its file / sheet name and column headers (the record title breaks
+ties); one-row lookup sheets and data dictionaries count as documentation, and the station /
+sample tables of a relational biological dataset count as biology.
+
+Each exported table keeps all original columns (empty rows / columns dropped), with
+`date_ISO8601`, `latitude_decimal`, `longitude_decimal` added when date or coordinate columns are
+recognised and not already in that form. The XLSX has three sheets: *Data*, *Columns* (original
+header, unit from the header, parameter group, Darwin Core term, numeric / text, fill rate,
+example) and *Source* (Zenodo record, DOI, creators, license, original file, citation). Records
+under a **NoDerivatives** license (CC BY-ND) get a change of format only - no columns are added.
+Files over 30 MB are listed, not downloaded.
+
+**NetCDF** files are converted to **JSON** first (CF-JSON-like: source, global attributes,
+dimensions, and every variable with its dimensions, attributes, shape and data as nested arrays;
+times in ISO 8601, missing values as `null`, float32 to 7 significant digits), then **from the
+JSON** to CSV / XLSX: one long table per group of variables sharing the same dimensions (columns =
+dimension coordinates + variables; XLSX sheets *Data*, *Variables*, *Global attributes*, *Source*).
+Gridded fields with more than 100,000 cells stay in the JSON only (as a table they would be tens of
+millions of rows); NetCDF files inside zip archives larger than 30 MB are listed, not converted
+(`--max-nc-mb`, `--max-nc-per-record` change these limits).
+
+```bash
+python data_types.py                 # all records of output/conversion_results.json
+python data_types.py --ids 3998049   # some records (merged into the existing results)
+```
+
+Outputs: `output/other_data/<type>/<zenodo id>/<table>.csv|.xlsx|.json`, `output/data_types.json`
+(per file: type, size, table, rows, columns, parameter groups, processed / saved, download paths;
+summary per type: records, files found, tables processed, files saved) and
+`output/Data_Types_Report.xlsx`.
+
 ### Tests
 ```bash
 python -m pytest -q tests
@@ -304,11 +389,13 @@ python -m pytest -q tests
 | `conversion_results.json` | summary + one entry per dataset (status, layout, core, counts, WoRMS match %, field mappings, unmapped columns, missing terms, issues) — consumed by the dashboard |
 | `conversion_results.csv` | the same, flattened |
 | `Conversion_Report_DwC.xlsx` | sheets *Summary*, *Datasets*, *Field mappings*, *Issues* |
+| `paper_values.json`, `Paper_Values_Review.xlsx` | dates / coordinates found in the linked papers (`paper_sources.py`) |
+| `other_data/`, `data_types.json`, `Data_Types_Report.xlsx` | data types of all files and the exported non-biological tables (`data_types.py`) |
 
 Every archive is re-opened after writing: `meta.xml` must parse, all referenced files must
 exist, column counts must match `meta.xml` and core ids must be unique.
 
-## 9. Latest run (13 October 2026)
+## 9. Latest run (15 October 2026)
 
 Full run over all 321 open *Included* records of the Task 1 inventory (Black Sea first, then
 datasets whose title/notes mention occurrence, abundance, survey or monitoring); the 22 records
@@ -318,15 +405,24 @@ and all 321 records were reconverted with `--large-files` after the fixes of 13 
 observation-table and derived date/coordinate rules (fewer false occurrences from noise, vessel and
 logger tables; *Derived dates and coordinates* filled 2 datasets with dates and 5 with coordinates).
 
+**Step 3 - linked papers** (`paper_sources.py`): 68 of the 153 records with an archive link to a
+paper; 43 full texts were open access (Europe PMC or open-access PDF), 25 were closed. Dates or
+coordinates were found for 38; after the checks (period ≤ 10 years, study area ≤ 100 km, inside
+the declared region and not on land, not a compilation of records) 24 periods and 10 study areas
+were applied: eventDate of 1,153 events in 14 datasets and coordinates of 618 events in 7
+datasets. Four datasets became *Converted* (macrofouling off Elba 5014110, kittiwakes at Hornøya
+4971554, mudflat meiofauna 4943866, round goby 5779207). No station table could be matched to the
+data (station positions are mostly in figures or supplements).
+
 | Status | Datasets |
 |---|---|
-| Converted | 32 |
-| Partial | 121 |
+| Converted | 36 |
+| Partial | 117 |
 | Failed | 168 |
 | Not attempted | 0 |
 
-153 archives written (104 Event core, 49 Occurrence core; 103 long, 50 wide layouts) —
-521,105 events, 5,326,879 occurrences, 2,575,203 eMoF records; mean WoRMS match 88 %
+153 archives written (112 Event core, 41 Occurrence core; 103 long, 50 wide layouts) —
+521,331 events, 5,326,879 occurrences, 2,575,204 eMoF records; mean WoRMS match 88 %
 (76 % before the fixes, which removed metadata sheets and data dictionaries read as taxa). All
 archives pass the structural check. Most *Partial* datasets lack coordinates and/or dates in
 the files themselves (typical of experiment / supplementary-material uploads). Of the *Failed*
@@ -356,7 +452,7 @@ breaker after three server errors and retries the skipped datasets in extra pass
 * Information held only in papers or README files (coordinates, dates, units) is not extracted.
 * Units are taken from header brackets only; unit-less matrices get a generic measurement type.
 * Joins between tables need a shared key column (`<x>_ID`, `<x> code`) or station → coordinates look-ups.
-* NetCDF, shapefiles, R data and sequence files are out of scope.
+* Shapefiles, rasters, R data and sequence files are only listed and classified (`data_types.py`), not converted.
 
 Archives should be reviewed (e.g. with Task 2 QC / EMODnetBiocheck).
 
